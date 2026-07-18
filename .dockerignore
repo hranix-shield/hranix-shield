@@ -1,0 +1,50 @@
+# Build context for server/Dockerfile is the repo root (see docker-compose.yml
+# build.context) — REPO_ROOT is resolved by app/config.py as 3 parents above
+# app/config.py, so the image needs the same server/ nesting as the repo, but
+# nothing else in the repo is needed at runtime. Keep this list in sync with
+# .gitignore's spirit: never ship dev-only, secret, or already-gitignored data
+# into the image.
+
+# --- Docs/site/prototypes: not needed to run the server ---
+docs/
+site/
+clients/
+mcp-servers/
+
+# --- Git/editor/OS noise ---
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+.DS_Store
+docs/.obsidian/
+
+# --- Python dev artifacts (never ship the host venv into the image) ---
+server/venv/
+**/__pycache__/
+**/*.pyc
+server/.pytest_cache/
+.mypy_cache/
+.coverage*
+htmlcov/
+
+# --- Tests: dev-only, not needed at runtime ---
+server/tests/
+
+# --- Secrets / local data / logs (never bake into an image layer) ---
+.env
+.env.local
+.env.staging
+.env.production
+data/
+logs/
+infra/backups/
+*.pem
+*.key
+
+# --- Other infra compose files (CrowdSec etc. — separate services) ---
+infra/security/
+
+# --- This Dockerfile/compose's own scratch ---
+docker-compose.override.yml

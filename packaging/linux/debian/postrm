@@ -1,0 +1,41 @@
+#!/bin/sh
+# A-22: runs AFTER dpkg has removed hranix-shield's files. Only "purge"
+# (dpkg --purge / apt purge — a deliberate full uninstall, not a plain
+# `apt remove`) removes the dedicated service account and reloads the
+# systemd unit cache; a plain "remove" leaves the account (and, more
+# importantly, /var/lib/hranix-shield's data — SQLite DB, JWT/restic
+# secrets, ClamAV quarantine, restic backup repository) untouched, the
+# same "never destroy user data implicitly" principle this project already
+# applies to backup/restore (A-12) — an operator who wants a fully clean
+# slate removes $HOME by hand after purging.
+set -e
+
+HRANIX_USER=hranix-shield
+
+case "$1" in
+  purge)
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl daemon-reload 2>/dev/null || true
+    fi
+    if getent passwd "$HRANIX_USER" >/dev/null 2>&1; then
+        userdel "$HRANIX_USER" 2>/dev/null || true
+    fi
+    if getent group "$HRANIX_USER" >/dev/null 2>&1; then
+        groupdel "$HRANIX_USER" 2>/dev/null || true
+    fi
+    ;;
+
+  remove)
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl daemon-reload 2>/dev/null || true
+    fi
+    ;;
+
+  upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+    ;;
+
+  *)
+    ;;
+esac
+
+exit 0

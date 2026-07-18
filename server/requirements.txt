@@ -1,0 +1,56 @@
+# AI-Assistant — платформенное ядро (сервер).
+# Пины проставить при инициализации Фазы 0 (сейчас — базовый набор без версий,
+# чтобы зафиксировать состав; закрепить версиями перед первым коммитом кода).
+
+# --- Веб/транспорт ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+websockets
+python-multipart
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+
+# --- Каталоги данных приложения (A-19) ---
+# platformdirs (MIT license, verified against the installed package's own
+# LICENSE file — matches https://github.com/tox-dev/platformdirs — see the
+# A-19 task report) resolves OS-correct user data/log directories for the
+# packaged (PyInstaller) native-installer builds of A-20..A-22 — see
+# app/config.py's is_packaged(). Lightweight (no transitive deps of its
+# own), needed in both packaged AND normal (venv/Docker) mode, unlike the
+# Phase-2 RAG dependencies below.
+platformdirs==4.10.0
+
+# --- Инференс (портируемый рантайм) ---
+ollama                 # клиент к локальному Ollama; llama.cpp — как альтернативный бэкенд
+# mlx, mlx-lm, mlx-audio  # ставить ТОЛЬКО на Apple Silicon (опциональный ускоритель)
+
+# --- ASR / голос ---
+# whispercpp / faster-whisper — выбрать при реализации Фазы 0
+torch
+torchaudio
+soundfile
+
+# --- RAG (Фаза 2: sqlite-vec или ранний Postgres — вопрос Фазы 1; §4.5-ревизия) ---
+llama-index
+# sqlite-vec            # кандидат для Фазы 2 (Apache-2.0)
+# pgvector              # Фаза 3+ (PostgreSQL)
+sentence-transformers   # эмбеддинги bge-m3
+pymupdf                 # PDF
+python-docx             # DOCX
+
+# --- Хранилище (ревизия §4.5 2026-07-10, перенумеровано 2026-07-14: SQLite Фазы 0–2 → PostgreSQL Фаза 3) ---
+sqlalchemy[asyncio]==2.0.51
+aiosqlite==0.22.1
+alembic==1.18.5         # миграции схем (общие для SQLite и Postgres)
+# asyncpg               # Фаза 3+ (PostgreSQL)
+
+# --- Безопасность / аутентификация ---
+python-jose[cryptography]==3.5.0
+passlib[bcrypt]==1.7.4
+bcrypt>=4.0.1,<4.1
+
+# --- Тесты ---
+pytest==8.3.4
+pytest-asyncio==0.25.1
+httpx==0.28.1

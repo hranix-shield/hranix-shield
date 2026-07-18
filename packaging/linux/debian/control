@@ -1,0 +1,22 @@
+Package: hranix-shield
+Version: 0.1.0
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: systemd, libc6
+Maintainer: Hranix <security@hranix.com>
+Homepage: https://github.com/hranix/ai-assistant
+Description: Hranix Shield — free open-source security panel (Phase 0)
+ Native Linux install of Hranix Shield's Phase 0 "Панель безопасности" —
+ the security-facing panel of the Hranix Assistant platform, licensed
+ AGPLv3+CLA. Runs as a systemd system service under a dedicated
+ unprivileged user (hranix-shield), serving a local web panel on
+ 127.0.0.1:8080. Optional companion services (CrowdSec, ClamAV, Wazuh
+ Manager) are separate Docker containers, not part of this package — see
+ infra/security/*/docker-compose.yml in the source repository.
+ .
+ This native install exists specifically so the "Периметр" (host firewall /
+ disk encryption) and "Сеть" (osquery) security consoles can inspect the
+ REAL host OS — a Docker deployment of the same panel can only ever see the
+ Linux container it runs in, never the actual host, regardless of the
+ host's own OS.

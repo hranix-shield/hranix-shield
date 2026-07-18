@@ -1,0 +1,80 @@
+# A-11: CrowdSec — Local API (LAPI) for the "Обнаружение вторжений" console's
+# real data source (server/app/services/mcp/security_connectors/crowdsec.py).
+# See docs/план-спецификация-фаза-0-2026-07-14.md (A-11) and CLAUDE.md's
+# licence gate: CrowdSec (MIT license) is composed here as a fully separate
+# network service — this platform's own process never links its code, it
+# only ever talks to its already-running LAPI over HTTP as a registered
+# bouncer.
+#
+# Host-safety constraints agreed with the architect for this task — do not
+# relax without a new decision:
+#   - isolated bridge network only, never `network_mode: host`
+#   - never `privileged: true`
+#   - no bind-mount of the host's real /var/log (no real log ingestion is
+#     configured here — this validates the LAPI integration itself, it does
+#     NOT turn this machine into a protected host)
+#   - no bouncer component that rewrites the host's iptables/nftables — this
+#     file only runs the crowdsec agent+LAPI container, nothing that applies
+#     decisions back onto this machine's network stack
+#
+# NOT started automatically by the application (same as restic in A-12 — an
+# external service the operator brings up separately, not part of this
+# repo's own process lifecycle):
+#
+#   docker compose -f infra/security/crowdsec/docker-compose.yml up -d
+#
+# Then register a bouncer and copy the printed key into .env as
+# CROWDSEC_API_KEY (CROWDSEC_LAPI_URL=http://127.0.0.1:8089 already matches
+# the port mapping below, see .env.example):
+#
+#   docker compose -f infra/security/crowdsec/docker-compose.yml exec crowdsec \
+#     cscli bouncers add hranix-shield-bouncer -o raw
+#
+# To tear down (keeps the named volume, so `up -d` again resumes the same
+# CrowdSec DB/bouncer list):
+#
+#   docker compose -f infra/security/crowdsec/docker-compose.yml down
+#
+# To also drop CrowdSec's own local state (start over from a clean install):
+#
+#   docker compose -f infra/security/crowdsec/docker-compose.yml down -v
+
+services:
+  crowdsec:
+    image: crowdsecurity/crowdsec:latest
+    container_name: hranix-crowdsec
+    restart: unless-stopped
+    networks:
+      - hranix-security-net
+    ports:
+      # Bound to 127.0.0.1 only, same "localhost by default" convention as
+      # SERVER_HOST in .env.example / SECURITY.md — no LAN exposure by
+      # default. Host port 8089 deliberately does not collide with this
+      # platform's own SERVER_PORT=8080.
+      - "127.0.0.1:8089:8080"
+    volumes:
+      # CrowdSec's OWN database + downloaded hub content (parsers/scenarios)
+      # — a named Docker volume, NOT a bind-mount of any host path. No
+      # host /var/log is mounted: this container ingests nothing from this
+      # machine, it only serves LAPI for this task's read-only integration.
+      - crowdsec-data:/var/lib/crowdsec/data
+
+networks:
+  # Found live 2026-07-16: this used to be its own private bridge network,
+  # unreachable from hranix-shield's container (127.0.0.1 inside a
+  # container is that container's own loopback, not the host's — the
+  # 127.0.0.1:8089 host port mapping below is only reachable from the
+  # HOST, e.g. `cscli` run on the host, not from another container). Now
+  # joins the same shared network the root docker-compose.yml creates
+  # (`external: true` — this compose project doesn't own it, the root one
+  # does; start that one first) so hranix-shield can reach this container
+  # by name (`hranix-crowdsec:8080`, its internal port — see root
+  # docker-compose.yml's CROWDSEC_LAPI_URL override). Still never
+  # `network_mode: host` and still nothing else published beyond the
+  # 127.0.0.1-bound LAPI port below — joining a shared bridge network is
+  # not the same as losing isolation from the host.
+  hranix-security-net:
+    external: true
+
+volumes:
+  crowdsec-data:

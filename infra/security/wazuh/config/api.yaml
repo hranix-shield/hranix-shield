@@ -1,0 +1,12 @@
+# A-16: mounted over /var/ossec/api/configuration/api.yaml (see
+# ../docker-compose.yml's header comment, "implementation details" — the
+# WAZUH_CONFIG_MOUNT convention re-applies this on every container start).
+#
+# TLS disabled deliberately: this API is bound to 127.0.0.1 only (see
+# ../docker-compose.yml), so a self-signed certificate would buy this
+# project's own connector (server/app/services/mcp/security_connectors/
+# wazuh.py) nothing except a `verify=False` workaround — the same "plain
+# HTTP over a loopback-only, explicitly-opted-into port" shape CrowdSec's
+# LAPI already uses in this project (infra/security/crowdsec/).
+https:
+  enabled: no

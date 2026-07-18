@@ -1,0 +1,147 @@
+# AI-Assistant — набор зависимостей для НАТИВНЫХ УСТАНОВЩИКОВ (A-20..A-22,
+# PyInstaller), не для Docker/venv-разработки — тот путь по-прежнему
+# использует server/requirements.txt без изменений (см. план-спецификацию
+# "Обязательные правила" + инструкцию-разработку A-19..A-22).
+#
+# Подмножество requirements.txt БЕЗ Фаза-2/голос-зависимостей
+# (torch/torchaudio/soundfile/sentence-transformers/llama-index/pymupdf/
+# python-docx/ollama) — первое впечатление пользователя нативного установщика
+# — это скачиваемый файл, не уже закешированный слой Docker-реестра.
+#
+# Проверено перед исключением (не предположено), 2026-07-17:
+#   grep -rn "^\s*import <pkg>\|^\s*from <pkg>" server/app --include='*.py'
+# для каждого из: torch, sentence_transformers, llama_index, pymupdf, fitz,
+# docx, torchaudio, soundfile, ollama — НОЛЬ совпадений вне server/tests для
+# всех девяти (server/app/services/rag/ и server/app/services/voice/ — это
+# пустые __init__.py, ещё не реализованы; server/app/services/inference/
+# (A-7's InferenceBackend) использует httpx, НЕ пакет `ollama`, и сам нигде
+# не импортируется ни одним роутером/app_factory.py в Фазе 0 — ai_enabled
+# по умолчанию False). Тот же вывод, что уже был сделан для Docker-образа
+# (см. Dockerfile's комментарий про CPU-only torch) — здесь эти пакеты не
+# просто "не используются рантаймом", они полностью отсутствуют из сборки.
+
+# --- Веб/транспорт ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+websockets
+python-multipart
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+
+# --- Каталоги данных приложения (A-19) ---
+# platformdirs (MIT license, verified against the installed package's own
+# LICENSE file — matches https://github.com/tox-dev/platformdirs — see the
+# A-19 task report) resolves OS-correct user data/log directories — see
+# app/config.py's is_packaged(). This is what makes native-installer mode
+# (this file) work at all, so it stays even though it's also in the plain
+# requirements.txt.
+platformdirs==4.10.0
+
+# --- Хранилище (SQLite Фазы 0-2 — §4.5) ---
+sqlalchemy[asyncio]==2.0.51
+aiosqlite==0.22.1
+alembic==1.18.5         # миграции схем — server/launcher.py вызывает их программно (A-20)
+
+# --- Безопасность / аутентификация ---
+python-jose[cryptography]==3.5.0
+passlib[bcrypt]==1.7.4
+bcrypt>=4.0.1,<4.1
+
+# --- HTTP-клиент для внешних security-коннекторов ---
+# httpx: requirements.txt lists this under its own "Тесты" section, but a
+# fresh grep (2026-07-17, see above) shows it is actually a REAL runtime
+# import — services/mcp/security_connectors/crowdsec.py AND wazuh.py both
+# `import httpx` at module level, and both are imported unconditionally by
+# app_factory.py's register_default_security_connectors() at every
+# create_app() call, packaged or not. Confirmed the hard way: omitting
+# this row makes the packaged app crash at import time
+# (ModuleNotFoundError: No module named 'httpx') before it can even try to
+# serve /health — see A-20 task report.
+httpx==0.28.1
+
+# --- Упаковка ---
+# PyInstaller — license verified 2026-07-17 against pyinstaller==6.21.0's
+# own PKG-INFO/METADATA + COPYING.txt (downloaded from PyPI, not recalled
+# from memory): "GPLv2-or-later with a special exception which allows to
+# use PyInstaller to build and distribute non-free programs (including
+# commercial ones)" — the "Bootloader Exception" section of COPYING.txt
+# spells out that the GPL only covers PyInstaller's OWN sources; the
+# bootloader/loader files embedded into a BUILT executable may be
+# combined with and distributed under any license, which is what makes it
+# safe to use here for an AGPLv3+CLA-licensed app (same principle CLAUDE.md
+# already applies to every GPL-family *tool* used as an external process,
+# just for a build tool instead of a runtime one). Only needed to RUN the
+# build itself (`pyinstaller hranix-shield.spec`), never imported by the
+# shipped app — kept here anyway so `pip install -r
+# requirements-packaged.txt` in a clean build venv is the one command that
+# gets you everything needed to build.
+pyinstaller==6.21.0
+
+# --- macOS menu-bar shell (A-20 only) ---
+# rumps (BSD-3-Clause / "Modified BSD License" — verified against
+# rumps-0.4.0's own LICENSE file downloaded from PyPI, 2026-07-17, matches
+# https://github.com/jaredks/rumps) — a macOS-only PyObjC wrapper, useless
+# outside a PyInstaller .app bundle on macOS, which is exactly why it lives
+# here and not in the plain requirements.txt (dev/Docker never needs it).
+# `sys_platform` marker so `pip install -r requirements-packaged.txt`
+# does not fail/attempt to build this on a future Linux/Windows packaging
+# venv (A-21/A-22) that reuses this same file's non-macOS-specific rows.
+rumps==0.4.0; sys_platform == "darwin"
+
+# --- Windows tray shell (A-21 only) ---
+# infi.systray — system-tray icon/menu, the Windows equivalent of rumps'
+# macOS menu bar (architect decision: tray icon, not a pywin32 NT service
+# — see packaging/windows/hranix_shield_tray.py's module docstring).
+#
+# LIBRARY HISTORY: this row originally pinned `pystray==0.19.5`. That
+# library is LGPLv3 (verified against its own PyPI METADATA +
+# COPYING/COPYING.LGPL at the time) — OSI-approved, but NOT MIT/Apache-2.0/
+# BSD like every other packaging-only dependency in A-19..A-21, and
+# directly `import`-ed into this same process (unlike ClamAV/CrowdSec/
+# Wazuh, which are separate Docker containers spoken to over a socket/
+# HTTP) rather than run as an external service — flagged explicitly to the
+# architect per plan-spec "Особые указания" (disagreements go up, not a
+# silent judgment call), escalated to the user, who chose to replace it
+# with `infi.systray` instead of seeking sign-off on the LGPL exception.
+#
+# infi.systray==0.1.12.1 — License verified 2026-07-18 against TWO
+# independent sources, not recalled from memory: (1) its own PyPI
+# METADATA — `License: BSD`, `Classifier: License :: OSI Approved :: BSD
+# License`; (2) its GitHub repo (`Infinidat/infi.systray`, `develop`
+# branch)'s own `LICENSE` file — BSD 3-Clause, copyright INFINIDAT 2017;
+# GitHub's own license detector independently agrees ("BSD-3-Clause
+# license"). Fits CLAUDE.md's license gate directly (MIT/Apache-2.0/BSD
+# for the platform core) — no LGPL exception/reasoning needed at all,
+# unlike the pystray row this replaces.
+#
+# No `pywin32` needed either (confirmed by reading `infi/systray/
+# win32_adapter.py`'s own source on PyPI, not assumed): its ENTIRE Win32
+# surface is bound via bare `ctypes`/`ctypes.wintypes` (stdlib) — no
+# third-party runtime dependency at all beyond this one package (it does
+# list `setuptools` in its own `Requires-Dist`, but nothing in its source
+# actually imports `setuptools`/`pkg_resources` — confirmed by grep — so
+# this is a vestigial packaging-metadata leftover, not a real bundling
+# concern).
+#
+# infi.systray's `SysTrayIcon` requires a REAL `.ico` FILE on disk for its
+# `icon` parameter (unlike pystray, which accepted an in-memory
+# `PIL.Image.Image`) — see hranix_shield_tray.py's `_generate_icon_file()`.
+# This is why Pillow (below) is STILL a dependency after this swap, not
+# eliminated by it — confirmed by `grep -rn "PIL\|Pillow" server/
+# packaging` that nothing else in this project uses it, so it really is
+# only for this one purpose, just a different one than before (writing a
+# `.ico` file instead of returning an in-memory image).
+infi.systray==0.1.12.1; sys_platform == "win32"
+
+# Pillow — generates the tray icon as a real `.ico` file at runtime (see
+# hranix_shield_tray.py's `_generate_icon_file()` — infi.systray needs a
+# filesystem path, not an in-memory image, see the comment above). License
+# verified 2026-07-18 against pillow==12.3.0's own METADATA + LICENSE
+# (downloaded from PyPI): `License-Expression: MIT-CMU` — the current SPDX
+# identifier for what used to be called HPND ("Historical Permission
+# Notice and Disclaimer"), OSI-approved, same permissive family as MIT.
+# Confirmed a `cp312-win_amd64` wheel exists for this exact pinned version
+# (pypi.org/pypi/Pillow/12.3.0/json), matching the Python 3.12 the A-21 CI
+# workflow installs.
+Pillow==12.3.0; sys_platform == "win32"

@@ -1,0 +1,185 @@
+# A-16: Wazuh Manager — FIM (file integrity monitoring) for the "Журналы ОС"
+# console's real data source
+# (server/app/services/mcp/security_connectors/wazuh.py). See
+# docs/план-спецификация-фаза-0-стек-безопасности-2026-07-16.md (A-16) and
+# CLAUDE.md's licence gate: Wazuh (GPLv2) is composed here as a fully
+# separate network service — this platform's own process never links its
+# code, it only ever talks to its already-running Manager REST API over
+# plain HTTP.
+#
+# ---------------------------------------------------------------------------
+# Decision #1 (required by the task brief BEFORE writing any code): manager-
+# only, NOT the full Wazuh stack (manager + indexer + dashboard).
+# ---------------------------------------------------------------------------
+# Confirmed empirically against a live `wazuh/wazuh-manager` container while
+# building this task (see the A-16 task report for the full transcript):
+# `GET /agents` and `GET /syscheck/{agent_id}` — everything this task's DoD
+# needs (agent status + FIM findings) — are served DIRECTLY by the manager's
+# own REST API from its own local `wazuh-db`, with ZERO dependency on the
+# indexer (OpenSearch) or dashboard. The indexer/dashboard stack only adds
+# long-term alert history + a general alert-search UI, neither of which
+# this task's DoD asked for — so standing up an entire second heavy service
+# (OpenSearch, an order of magnitude heavier than CrowdSec) would have been
+# pure unjustified scope growth. This is a SINGLE container, dramatically
+# lighter than the official `wazuh-docker` single-node reference compose
+# (manager + indexer + dashboard, 3 containers).
+#
+# No separate agent container either: Wazuh's own architecture already
+# treats the manager itself as agent id "000" — a permanent, built-in local
+# agent every manager has (confirmed live: `GET /agents` shows "000" as
+# "active" the instant the manager itself is up, no enrollment needed). This
+# compose file therefore never registers or runs a second agent process —
+# `server/app/services/mcp/security_connectors/wazuh.py` always queries
+# agent "000" (`Settings.wazuh_agent_id`'s default).
+#
+# ---------------------------------------------------------------------------
+# Decision #2: FIM scope — the host-safety question (A-16's central
+# architectural question per the task brief, "не мелочь").
+# ---------------------------------------------------------------------------
+# FIM inherently wants filesystem visibility, in direct tension with this
+# project's "no bind-mount of the host's real filesystem" host-safety rule
+# (see infra/security/crowdsec/docker-compose.yml's own checklist). Resolved
+# narrowly, not by abandoning the rule: the two read-only bind-mounts below
+# expose ONLY REPO_ROOT/data and REPO_ROOT/logs — this project's OWN
+# application data (the SQLite DB, ClamAV's quarantine dir, A-5's own
+# logs/assistant.log, the JWT/restic secret files) — never the user's home
+# directory, Downloads, or any other host path. This is a deliberate,
+# narrow, DOCUMENTED exception (matching the task brief's own suggestion),
+# not a silent loosening of "no host bind-mounts" — the container only ever
+# sees two directories that already belong to this application, nothing a
+# user owns outside this project, and both mounts are `:ro` (this container
+# can observe but never write/modify anything on the host). See
+# config/ossec.conf's `<syscheck><directories>` for exactly what is watched.
+#
+# Host-safety constraints agreed with the architect for this task — do not
+# relax without a new decision (same checklist A-11/A-17 established):
+#   - isolated bridge network only, never `network_mode: host`;
+#   - never `privileged: true`;
+#   - API port bound to 127.0.0.1 only, no LAN exposure by default;
+#   - NO remote-agent-enrollment ports published (1514/1515/514/1516) — this
+#     deployment never accepts a remote agent connection (see Decision #1),
+#     so those ports are not even exposed, deliberately smaller surface than
+#     the official reference compose;
+#   - the only host bind-mounts are the two explicitly-justified read-only
+#     project directories above — see Decision #2.
+#
+# ---------------------------------------------------------------------------
+# Implementation details confirmed empirically while building this task
+# ---------------------------------------------------------------------------
+#   - Image: `wazuh/wazuh-manager:4.14.6`, NOT `:latest` and NOT the older
+#     `4.9.x` line — `docker manifest inspect`/`docker buildx imagetools
+#     inspect` confirmed `4.9.2` publishes linux/amd64 ONLY (the exact same
+#     multi-arch trap A-17's own task report already hit with
+#     `clamav/clamav:latest`), while `4.14.6` publishes both linux/amd64 AND
+#     linux/arm64 — the correct choice for a product targeting
+#     Win/Mac/Linux (CLAUDE.md), not just this amd64 reference machine.
+#     Running `4.9.2` under Rosetta/QEMU emulation on this Apple Silicon dev
+#     machine also produced hundreds of spurious
+#     `wazuh-syscheckd: ERROR: (6606): Select failed` log lines — pure
+#     emulation noise, confirmed gone entirely once re-tested against the
+#     native-arm64 `4.14.6` image. A second, independent reason `4.14.6` is
+#     the right choice here, not just the license/arch one.
+#   - `ulimits: nofile 655360` is NOT cosmetic: without it, `wazuh-syscheckd`
+#     fails realtime (inotify-based) FIM outright (`Select failed`) even on
+#     the native-arch image — confirmed live, matches the official
+#     `wazuh-docker` single-node compose's own ulimits block.
+#   - `config/api.yaml` (mounted over the API's own config) sets
+#     `https.enabled: no` — this manager's REST API, by stock default, only
+#     serves HTTPS with a self-signed certificate. Rather than have this
+#     project's own `wazuh.py` connector carry a `verify=False` TLS
+#     workaround (a real code smell), this deployment disables TLS on the
+#     API entirely at the source, matching CrowdSec's own plain-HTTP LAPI
+#     precedent — meaningful here because the port is 127.0.0.1-only to
+#     begin with, so TLS on loopback traffic between this host's own two
+#     processes buys nothing a network-level check couldn't already tell
+#     you (both processes ARE the same trust boundary).
+#   - `config/ossec.conf` (mounted over the manager's own config — the
+#     official `/wazuh-config-mount/...` convention, confirmed live to be
+#     re-applied on EVERY container start, not just the first) also
+#     disables `<indexer>`/`<vulnerability-detection>` explicitly (Decision
+#     #1: no indexer exists in this deployment, so pointing at one would
+#     just generate endless connection-retry log noise) — see that file's
+#     own comments for the full syscheck configuration.
+#
+# NOT started automatically by the application (same as CrowdSec/ClamAV/
+# restic — an external service the operator brings up separately, not part
+# of this repo's own process lifecycle):
+#
+#   cp infra/security/wazuh/.env.example infra/security/wazuh/.env
+#   # edit infra/security/wazuh/.env: set WAZUH_API_PASSWORD (see that
+#   # file for the complexity rule the image itself enforces)
+#   docker compose -f infra/security/wazuh/docker-compose.yml up -d
+#
+# Then in the platform's OWN .env (repo root, see .env.example):
+# WAZUH_API_URL=http://127.0.0.1:55000, WAZUH_API_USERNAME/WAZUH_API_PASSWORD
+# matching whatever was set in infra/security/wazuh/.env above.
+#
+# To tear down (keeps the named volume, so `up -d` again resumes the same
+# FIM/agent state):
+#
+#   docker compose -f infra/security/wazuh/docker-compose.yml down
+#
+# To also drop that state (start over from a clean install):
+#
+#   docker compose -f infra/security/wazuh/docker-compose.yml down -v
+
+services:
+  wazuh-manager:
+    image: wazuh/wazuh-manager:4.14.6
+    container_name: hranix-wazuh-manager
+    restart: unless-stopped
+    # Required for realtime (inotify-based) FIM to work at all — see the
+    # implementation-details note above.
+    ulimits:
+      nofile:
+        soft: 655360
+        hard: 655360
+      memlock:
+        soft: -1
+        hard: -1
+    networks:
+      - hranix-security-net
+    ports:
+      # Bound to 127.0.0.1 only, same "localhost by default" convention as
+      # infra/security/crowdsec/docker-compose.yml. No 1514/1515/514/1516 —
+      # see the host-safety checklist above for why those are deliberately
+      # not published at all.
+      - "127.0.0.1:55000:55000"
+    environment:
+      # Sets/updates this manager's own REST API user on every startup (the
+      # image's own `create_user.py`, run by its entrypoint whenever both
+      # vars are present) — required, no default (see .env.example in this
+      # directory for the password-complexity rule the image itself
+      # enforces; startup fails loudly, not silently, if it's rejected).
+      - API_USERNAME=${WAZUH_API_USERNAME:-wazuh-wui}
+      - API_PASSWORD=${WAZUH_API_PASSWORD:?Set WAZUH_API_PASSWORD in infra/security/wazuh/.env (see .env.example there)}
+    volumes:
+      # This manager's OWN FIM/agent state (wazuh-db) — a named Docker
+      # volume, NOT a bind-mount of any host path, same shape as
+      # CrowdSec's crowdsec-data/ClamAV's clamav-db. Persists syscheck
+      # history/agent registration across a `down`/`up` cycle.
+      - wazuh-var:/var/ossec/queue
+      # Custom config, re-applied on every container start (confirmed live
+      # — see the implementation-details note above) — never drifts from
+      # what's checked into this repo.
+      - ./config/ossec.conf:/wazuh-config-mount/etc/ossec.conf:ro
+      - ./config/api.yaml:/wazuh-config-mount/api/configuration/api.yaml:ro
+      # Decision #2 above: ONLY these two of this project's OWN directories,
+      # read-only, never the host's home directory or any other path.
+      - ../../../data:/monitored/data:ro
+      - ../../../logs:/monitored/logs:ro
+
+networks:
+  # Found live 2026-07-16: same fix as crowdsec's/clamav's compose files —
+  # this used to be a private network hranix-shield's container couldn't
+  # reach. Now the same shared network the root docker-compose.yml creates
+  # (`external: true`; start that one first) — hranix-shield reaches this
+  # container as `hranix-wazuh-manager:55000` (see root docker-compose.yml's
+  # WAZUH_API_URL override). Still no `network_mode: host`, still no
+  # remote-agent-enrollment ports published, still only the two
+  # project-owned read-only bind-mounts from Decision #2 above.
+  hranix-security-net:
+    external: true
+
+volumes:
+  wazuh-var:

@@ -1,0 +1,130 @@
+# A-17: ClamAV/clamd — the "Вирусная активность" console's signature-based
+# scanner (server/app/services/mcp/security_connectors/clamav.py). See
+# docs/план-спецификация-фаза-0-стек-безопасности-2026-07-16.md (A-17) and
+# CLAUDE.md's licence gate: ClamAV (GPLv2) is composed here as a fully
+# separate network service — this platform's own process never links its
+# code, it only ever speaks clamd's own line protocol over a plain TCP
+# socket (see clamav.py's module docstring for the exact protocol calls).
+#
+# Image: clamav/clamav-debian (NOT clamav/clamav — that Alpine-based image's
+# `:latest` tag ships amd64-only, confirmed empirically while building this
+# task: `docker pull clamav/clamav:latest` fails outright on an Apple
+# Silicon dev machine with "no matching manifest for linux/arm64/v8".
+# clamav/clamav-debian is the official multi-arch image, confirmed via
+# `docker manifest inspect` to publish amd64 + arm64 + ppc64le — the
+# actually-correct choice for a product that targets Win/Mac/Linux
+# (CLAUDE.md), not just the reference platform this was developed on.
+#
+# Host-safety constraints agreed with the architect for this task — do not
+# relax without a new decision (same checklist A-11's CrowdSec compose file
+# established, see infra/security/crowdsec/docker-compose.yml):
+#   - isolated bridge network only, never `network_mode: host`
+#   - never `privileged: true`
+#   - port bound to 127.0.0.1 only, no LAN exposure by default
+#   - NO bind-mount of any real host directory (Downloads/temp/home/...): the
+#     scanner connector never sends `SCAN <path>` for clamd to open on its
+#     own filesystem, it streams file bytes to clamd over the socket itself
+#     (`INSTREAM`, see clamav.py's module docstring for why) — so this
+#     container needs zero visibility into the host filesystem to do its
+#     job, unlike osquery (A-15), which deliberately runs as a bare host
+#     process for the opposite reason (it inherently needs to see host
+#     state). The only volume here is a named one for clamd's OWN signature
+#     database, exactly the same shape as CrowdSec's `crowdsec-data` volume.
+#
+# freshclam (signature-database auto-update) policy — decided and documented
+# here, not left implicit (A-17 risk note #1: "решить явно, совместимо ли
+# автообновление с 'локально по умолчанию' позиционированием"):
+#
+#   CLAMAV_NO_FRESHCLAMD=true disables the freshclam BACKGROUND DAEMON (the
+#   periodic re-check loop) — same "safe default, explicit opt-in for
+#   anything that touches the network" principle already applied to
+#   BACKUP_ENABLED/AI_ENABLED (see server/app/config.py's Settings.clamav_enabled,
+#   which independently gates whether this platform's own process even
+#   tries to talk to clamd at all). A freshly started container therefore
+#   makes ZERO network calls of its own by design here — verified live
+#   while building this task, see the A-17 task report.
+#
+#   This still works out of the box (EICAR and any other real signature
+#   still detects, confirmed live) because `clamav/clamav-debian`'s tagged
+#   releases (this file pins `:latest`, i.e. the latest *release* tag, not
+#   `:latest_base`) ship a signature database baked into the image at build
+#   time — freshclam's own documented behaviour is to skip its "fetch once
+#   at startup" step entirely when a database is already present on disk
+#   (confirmed live: this container's logs show clamd starting immediately,
+#   no freshclam network activity at all, with CLAMAV_NO_FRESHCLAMD=true).
+#   The trade-off, stated honestly: those baked-in signatures are only as
+#   fresh as this image's last build, not "updated today" — acceptable for
+#   Phase 0 (detection still works, EICAR included), not a promise of
+#   up-to-the-hour coverage.
+#
+#   To opt into live updates later, an operator has two options, same
+#   "manual command, not a hidden default" shape as CrowdSec's bouncer-key
+#   registration below:
+#     - one-off: `docker compose -f infra/security/clamav/docker-compose.yml
+#       exec clamav freshclam` (fetches once, immediately)
+#     - persistent: remove/flip CLAMAV_NO_FRESHCLAMD below and restart —
+#       turns the background daemon back on (default check frequency per
+#       the image: once/day)
+#   No server API exposes a "trigger update" action: this platform's own
+#   process deliberately has no Docker-exec/privileged access into this (or
+#   any) container — granting that would be a much larger new attack
+#   surface than this task's scope justifies, see the A-17 task report.
+#
+# NOT started automatically by the application (same as CrowdSec/restic — an
+# external service the operator brings up separately, not part of this
+# repo's own process lifecycle):
+#
+#   docker compose -f infra/security/clamav/docker-compose.yml up -d
+#
+# Then in .env: CLAMAV_ENABLED=True (off by default, see Settings.clamav_enabled
+# above) — CLAMAV_HOST=127.0.0.1/CLAMAV_PORT=3310 already match the port
+# mapping below.
+#
+# To tear down (keeps the named volume, so `up -d` again resumes the same
+# signature database without re-fetching):
+#
+#   docker compose -f infra/security/clamav/docker-compose.yml down
+#
+# To also drop the signature database (start over from the image's baked-in
+# copy):
+#
+#   docker compose -f infra/security/clamav/docker-compose.yml down -v
+
+services:
+  clamav:
+    image: clamav/clamav-debian:latest
+    container_name: hranix-clamav
+    restart: unless-stopped
+    networks:
+      - hranix-security-net
+    ports:
+      # Bound to 127.0.0.1 only, same "localhost by default" convention as
+      # infra/security/crowdsec/docker-compose.yml. 3310 is clamd's own
+      # documented default port — CLAMAV_PORT in .env.example matches it.
+      - "127.0.0.1:3310:3310"
+    environment:
+      # See the freshclam policy note above: no periodic/background update
+      # daemon by default, explicit opt-in only.
+      - CLAMAV_NO_FRESHCLAMD=true
+    volumes:
+      # clamd's OWN signature database — a named Docker volume, NOT a
+      # bind-mount of any host path. No Downloads/temp/home directory is
+      # mounted: this container never sees host file paths at all, see the
+      # INSTREAM note above.
+      - clamav-db:/var/lib/clamav
+
+networks:
+  # Found live 2026-07-16: same fix as crowdsec's compose file — this used
+  # to be a private network hranix-shield's container couldn't reach
+  # (127.0.0.1:3310 from inside a container is that container's own
+  # loopback). Now the same shared network the root docker-compose.yml
+  # creates (`external: true`; start that one first) — hranix-shield
+  # reaches this container as `hranix-clamav:3310` (see root
+  # docker-compose.yml's CLAMAV_HOST override). Still no bind-mount of any
+  # host directory (see the INSTREAM note above) and still nothing
+  # published beyond the 127.0.0.1-bound port below.
+  hranix-security-net:
+    external: true
+
+volumes:
+  clamav-db:

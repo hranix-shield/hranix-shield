@@ -1,0 +1,27 @@
+#!/bin/sh
+# A-22: runs BEFORE dpkg removes hranix-shield's files. Only the "remove"
+# case stops+disables the unit — during an "upgrade" (old-prerm is invoked
+# with "upgrade" as dpkg replaces the package's files), the running
+# instance is deliberately left alone; postinst's `systemctl restart`
+# (debian/postinst, see its own comment) brings the new version up right
+# after the new files land, so stopping it here first would just add an
+# unnecessary outage window mid-upgrade. Standard debian packaging
+# convention for services (the same split debhelper's dh_installsystemd
+# generates automatically for packages that use it).
+set -e
+
+case "$1" in
+  remove)
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl disable --now hranix-shield.service 2>/dev/null || true
+    fi
+    ;;
+
+  upgrade|deconfigure|failed-upgrade)
+    ;;
+
+  *)
+    ;;
+esac
+
+exit 0

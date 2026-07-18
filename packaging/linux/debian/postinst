@@ -1,0 +1,71 @@
+#!/bin/sh
+# A-22: runs after dpkg has unpacked hranix-shield's files onto disk (both
+# on a fresh install AND on every upgrade — see the `case` below for how
+# those two are told apart). Deliberately does NOT run Alembic migrations
+# itself (architect decision #4, план-спецификация A-22): `launcher.launch()`
+# (server/launcher.py, shared with A-20/future-A-21) already applies
+# pending migrations idempotently on every single process start, the same
+# way `docker-entrypoint.sh` does for the Docker deployment — duplicating
+# that here would just be a second, redundant place the same logic could
+# drift out of sync.
+set -e
+
+HRANIX_USER=hranix-shield
+HRANIX_HOME=/var/lib/hranix-shield
+INSTALL_DIR=/opt/hranix-shield
+
+case "$1" in
+  configure)
+    # --system: a system account (UID/GID from the system range, not a
+    # regular login user) — see useradd(8). --create-home is NOT optional
+    # here despite --shell /usr/sbin/nologin: app/config.py's
+    # platformdirs.user_data_dir()/user_log_dir() (A-19) resolve relative
+    # to $HOME on Linux (XDG Base Directory fallback paths), so this
+    # account needs a REAL, populated home directory on disk, not just a
+    # passwd-file entry pointing at a path that was never created — a bare
+    # `useradd --system` without --create-home leaves /var/lib/hranix-shield
+    # referenced in passwd but absent from disk, which would make the very
+    # first launch fail the same way A-20 found `_ensure_data_directories()`
+    # was needed for the SQLite path (see server/launcher.py's docstring).
+    if ! getent passwd "$HRANIX_USER" >/dev/null 2>&1; then
+        useradd --system \
+            --home-dir "$HRANIX_HOME" \
+            --create-home \
+            --shell /usr/sbin/nologin \
+            "$HRANIX_USER"
+    fi
+
+    # Ownership of the install directory itself (architect decision #1:
+    # "выставить владельца на каталог установки") — the packaged binary
+    # and its bundled app/static+alembic resources are read-only at
+    # runtime (nothing under /opt/hranix-shield is written to after
+    # install; all writable state lives under $HRANIX_HOME, see
+    # hranix-shield.service's ReadWritePaths=), but the service account
+    # still needs read+execute access to run it at all.
+    chown -R "$HRANIX_USER:$HRANIX_USER" "$INSTALL_DIR"
+    chown -R "$HRANIX_USER:$HRANIX_USER" "$HRANIX_HOME"
+
+    systemctl daemon-reload
+
+    # Fresh install vs upgrade: `systemctl enable --now` on an already
+    # enabled+active unit is a harmless no-op for the "enable" half, but
+    # would NOT restart an already-running process onto the just-unpacked
+    # new binary (dpkg overwrote /opt/hranix-shield/hranix-shield's inode
+    # on disk; a process already holding the old inode open keeps running
+    # the OLD code until something restarts it) — so upgrades explicitly
+    # `restart` instead, fresh installs `enable --now`.
+    if systemctl is-enabled --quiet hranix-shield.service 2>/dev/null; then
+        systemctl restart hranix-shield.service
+    else
+        systemctl enable --now hranix-shield.service
+    fi
+    ;;
+
+  abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+
+  *)
+    ;;
+esac
+
+exit 0

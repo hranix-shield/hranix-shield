@@ -1,0 +1,110 @@
+# Hranix Shield — packaged product deployment (Фаза 0). Closes the DoD gap
+# flagged in docs/отчёт-о-доработке-фаза-0-2026-07-15.md §4: "docker compose
+# up brings up the panel with no manual steps" beyond copying .env.example.
+#
+# Quick start (any OS with Docker Desktop/Engine installed):
+#   cp .env.example .env
+#   # edit .env: set BOOTSTRAP_ADMIN_USERNAME/BOOTSTRAP_ADMIN_PASSWORD —
+#   # without these the panel comes up with no way to log in (A-3: no public
+#   # registration, single-tenant bootstrap-once-if-empty only).
+#   docker compose up -d
+#   open http://127.0.0.1:8080/panel/
+#
+# Full walkthrough + what to check: docs/инструкция-проверка-hranix-shield-docker-2026-07-16.md
+#
+# Separate from infra/security/crowdsec/docker-compose.yml on purpose — that
+# file packages an external tool (CrowdSec) the operator opts into
+# separately; this file packages the product itself.
+
+services:
+  hranix-shield:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: hranix-shield:latest
+    container_name: hranix-shield
+    restart: unless-stopped
+
+    # Optional on purpose: a fresh clone has no .env yet (gitignored), and
+    # the container should still come up (with Settings' own hardcoded
+    # defaults — see server/app/config.py) rather than hard-fail with
+    # "env file not found". Copy .env.example -> .env for a usable login.
+    env_file:
+      - path: .env
+        required: false
+
+    environment:
+      # Must be 0.0.0.0 to be reachable through the port mapping below — this
+      # does NOT weaken SECURITY.md's "localhost by default" promise: the
+      # actual host-facing exposure is the 127.0.0.1 binding on `ports:`,
+      # same pattern as infra/security/crowdsec/docker-compose.yml. Hardcoded
+      # here (not left to .env) because it's a Docker-networking fact, not a
+      # user security choice — SERVER_HOST in .env.example stays 127.0.0.1,
+      # correct for the non-Docker (venv) deployment path.
+      - SERVER_HOST=0.0.0.0
+
+      # Found live 2026-07-16: .env.example's CROWDSEC_LAPI_URL/CLAMAV_HOST/
+      # WAZUH_API_URL default to 127.0.0.1 — correct for venv-mode (app runs
+      # directly on the host, shares its loopback with the companion
+      # containers' host-mapped ports), but WRONG once hranix-shield itself
+      # runs in Docker: 127.0.0.1 inside THIS container is this container's
+      # own loopback, not the host's — confirmed live (curl to
+      # 127.0.0.1:8089 from inside hranix-shield times out; the companion
+      # containers were simply unreachable, not "not installed", every time
+      # anyone ran the recommended `docker compose up` path). Overridden
+      # here to the companion containers' names on the shared
+      # `hranix-security-net` below (container-name DNS, not
+      # host.docker.internal — that hostname is Docker-Desktop-only,
+      # doesn't exist on plain Linux Docker Engine without extra config,
+      # and this project targets Win/Mac/Linux equally). Ports here are the
+      # containers' OWN internal ports (8080/3310/55000), not the
+      # 127.0.0.1-bound host-mapped ones (8089/3310/55000) — different
+      # numbers matter for CrowdSec (8080 inside, 8089 on the host).
+      # Credentials (CROWDSEC_API_KEY/WAZUH_API_PASSWORD/CLAMAV_ENABLED)
+      # still come from .env as before — only the unreachable-from-Docker
+      # hostnames are fixed here.
+      - CROWDSEC_LAPI_URL=http://hranix-crowdsec:8080
+      - CLAMAV_HOST=hranix-clamav
+      - WAZUH_API_URL=http://hranix-wazuh-manager:55000
+
+    ports:
+      # Host-side 127.0.0.1 only — change deliberately (e.g. 0.0.0.0:8080)
+      # for real LAN access, same "opt-in, not default" rule as everywhere
+      # else in this project. ${SERVER_PORT:-8080} lets .env's SERVER_PORT
+      # move the host-side port too (container-side stays 8080 either way).
+      - "127.0.0.1:${SERVER_PORT:-8080}:8080"
+
+    volumes:
+      # Named volumes, not host bind-mounts: sidesteps the classic
+      # Windows/macOS/Linux UID-mismatch permission problem entirely (the
+      # image pre-creates+chows these paths — see server/Dockerfile — and
+      # Docker seeds a fresh named volume from that same ownership on first
+      # mount). data/ holds the SQLite DB + JWT_SECRET_FILE +
+      # RESTIC_PASSWORD_FILE (app/config.py) — all three must survive
+      # `docker compose down`/`up`, which named volumes do by default
+      # (only `down -v` drops them). infra/backups/ is the restic repository
+      # itself (A-12) — losing it would defeat the point of backups existing.
+      - hranix-data:/app/data
+      - hranix-logs:/app/logs
+      - hranix-backups:/app/infra/backups
+
+    networks:
+      - hranix-net
+
+networks:
+  # Explicit fixed name (not Compose's default `ai-assistant_hranix-net`
+  # project-prefixed one) so infra/security/{crowdsec,clamav,wazuh}/
+  # docker-compose.yml — separate Compose projects — can join it as
+  # `external: true` by this exact name and resolve `hranix-shield` /
+  # `hranix-crowdsec` / `hranix-clamav` / `hranix-wazuh-manager` as DNS
+  # names between each other. Start this compose file first (README/quick
+  # start already document that order) so the network exists before a
+  # companion service's `external: true` reference needs it.
+  hranix-net:
+    name: hranix-security-net
+    driver: bridge
+
+volumes:
+  hranix-data:
+  hranix-logs:
+  hranix-backups:

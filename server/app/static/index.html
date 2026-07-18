@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hranix Shield</title>
+<link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<!-- ЭКРАН ВХОДА -->
+<div class="login-screen" id="loginScreen">
+  <button class="lang-tgl" id="langTglLogin" onclick="toggleLang()">EN</button>
+  <div class="login-card">
+    <div class="login-brand">🛡️ <span>Hranix Shield</span></div>
+    <p class="login-lede" data-ru="Локальная панель безопасности" data-en="Local security panel">Локальная панель безопасности</p>
+    <form id="loginForm" onsubmit="return handleLogin(event)">
+      <label>
+        <span data-ru="Логин" data-en="Username">Логин</span>
+        <input type="text" id="loginUsername" name="username" autocomplete="username" required
+          data-ru-ph="имя пользователя" data-en-ph="username" placeholder="имя пользователя">
+      </label>
+      <label>
+        <span data-ru="Пароль" data-en="Password">Пароль</span>
+        <input type="password" id="loginPassword" name="password" autocomplete="current-password" required
+          data-ru-ph="пароль" data-en-ph="password" placeholder="пароль">
+      </label>
+      <div class="login-error" id="loginError" hidden></div>
+      <button type="submit" class="btn-accent" id="loginSubmit" data-ru="Войти" data-en="Sign in">Войти</button>
+    </form>
+  </div>
+</div>
+
+<!-- ПАНЕЛЬ -->
+<div class="panel" id="panelScreen" hidden>
+  <header class="topbar">
+    <div class="brand">🛡️ <span>Hranix Shield</span></div>
+    <button class="pill hp" id="healthPill" onclick="openHealthScreen()"
+      data-ru-title="Здоровье системы — открыть панель здоровья и логов (A-14)" data-en-title="System health — open the health & logs screen (A-14)">
+      <i></i><span id="healthPillText">…</span>
+    </button>
+    <button class="pill hp" id="securityShieldPill" onclick="loadOverview()"
+      data-ru-title="Агрегированный статус консолей защиты — худшее из 6 консолей" data-en-title="Aggregated security consoles status — worst of the 6 consoles">
+      <i></i><span id="securityShieldPillText">…</span>
+    </button>
+    <button class="pill hp" id="notificationsPill" onclick="openNotifications()"
+      data-ru-title="Уведомления — журнал и настройки каналов (A-13)" data-en-title="Notifications — log and channel settings (A-13)">
+      <i></i><span id="notificationsPillText">🔔 …</span>
+    </button>
+    <div class="topbar-sp"></div>
+    <button class="chip-btn" id="langBtn" onclick="toggleLang()">EN</button>
+    <button class="chip-btn" id="logoutBtn" onclick="handleLogout()" data-ru="Выйти" data-en="Sign out">Выйти</button>
+  </header>
+
+  <!-- A-14: предложение сформировать диагностический отчёт при переходе здоровья в
+       degraded/down — НЕ автоматическая отправка, только предложение (см. app.js
+       maybeProposeDiagnosticReport). Вне <main>, рядом с topbar, — видно на любом экране. -->
+  <div class="fail-banner" id="healthFailBanner" hidden>
+    <span class="fail-banner-ic">⚠️</span>
+    <span class="fail-banner-msg" id="healthFailBannerMsg"></span>
+    <button class="btn-accent" onclick="handleBannerGoToReport()"
+      data-ru="Перейти к отчёту" data-en="Go to report">Перейти к отчёту</button>
+    <button class="btn-ghost" onclick="dismissHealthFailBanner()"
+      data-ru="Не сейчас" data-en="Not now">Не сейчас</button>
+  </div>
+
+  <main class="content">
+    <!-- ОБЗОР -->
+    <section class="view active" id="view-overview">
+      <h1 data-ru="Защита" data-en="Protection">Защита</h1>
+
+      <div class="sec-kpis" id="secKpis"></div>
+
+      <div class="sec-cards" id="secCards"></div>
+
+      <div class="sec-log">
+        <div class="panel-h" data-ru="Журнал событий безопасности" data-en="Security event log">Журнал событий безопасности</div>
+        <div id="eventLogList">
+          <div class="con-empty" data-ru="Событий пока нет" data-en="No events yet">Событий пока нет</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- КОНСОЛЬ (общий контейнер, наполняется JS под конкретную консоль) -->
+    <section class="view" id="view-console">
+      <button class="con-back" onclick="closeConsole()">‹ <span data-ru="Обзор" data-en="Overview">Обзор</span></button>
+
+      <div class="con-head">
+        <div class="con-title"><span class="con-ic" id="conIcon"></span><b id="conTitle"></b></div>
+        <span class="con-eng" id="conEngine"></span>
+        <button class="con-power" id="conPower" onclick="handleTogglePower()">…</button>
+      </div>
+
+      <div class="con-error" id="conError" hidden></div>
+
+      <div class="con-sh" data-ru="Параметры состояния" data-en="Status metrics">Параметры состояния</div>
+      <div class="kb-stats" id="conMetrics"></div>
+
+      <div class="chart-card" id="conChartCard" hidden>
+        <div class="chart-cardh" id="conChartTitle"></div>
+        <div class="chart-empty" data-ru="Нет данных для графика — появятся после интеграции инструментов (A-11)"
+          data-en="No chart data yet — arrives once the security tools are integrated (A-11)">Нет данных для графика</div>
+      </div>
+
+      <div id="conListSection" hidden>
+        <div class="con-sh" id="conListTitle"></div>
+        <div class="con-list" id="conList"></div>
+      </div>
+
+      <div class="con-sh" data-ru="Управление" data-en="Actions">Управление</div>
+      <div class="con-actions" id="conActions"></div>
+      <div class="con-status" id="conActionStatus" hidden></div>
+
+      <div class="con-sh" data-ru="Настройки" data-en="Settings">Настройки</div>
+      <div class="st-list" id="conSettings"></div>
+    </section>
+
+    <!-- УВЕДОМЛЕНИЯ И КАНАЛЫ (A-13) -->
+    <section class="view" id="view-notifications">
+      <button class="con-back" onclick="closeNotifications()">‹ <span data-ru="Обзор" data-en="Overview">Обзор</span></button>
+      <h1 data-ru="Уведомления" data-en="Notifications">Уведомления</h1>
+
+      <div class="con-sh" data-ru="Последние уведомления" data-en="Recent notifications">Последние уведомления</div>
+      <div class="con-actions">
+        <button class="btn-ghost" onclick="handleMarkAllRead()" data-ru="Отметить все прочитанными" data-en="Mark all read">Отметить все прочитанными</button>
+      </div>
+      <div class="con-list" id="notifList">
+        <div class="con-empty" data-ru="Уведомлений пока нет" data-en="No notifications yet">Уведомлений пока нет</div>
+      </div>
+
+      <div class="con-sh" data-ru="Настройки → Уведомления и каналы" data-en="Settings → Notifications & channels">Настройки → Уведомления и каналы</div>
+
+      <div class="st-list notif-block" id="notifQuietHours"></div>
+      <div class="st-list notif-block" id="notifEscalation"></div>
+
+      <div class="con-sh" data-ru="Доверенные лица (эскалации + канал 5/почта)" data-en="Trusted contacts (escalations + channel 5/email)">Доверенные лица</div>
+      <div class="notif-contacts">
+        <input type="text" id="trustedContactsInput"
+          data-ru-ph="email через запятую" data-en-ph="emails, comma-separated" placeholder="email через запятую">
+        <button class="btn-accent" onclick="handleSaveTrustedContacts()" data-ru="Сохранить" data-en="Save">Сохранить</button>
+      </div>
+      <div class="con-status" id="notifContactsStatus" hidden></div>
+
+      <div class="con-sh" data-ru="Матрица: функция × канал" data-en="Matrix: function × channel">Матрица: функция × канал</div>
+      <div class="con-list" id="notifMatrix"></div>
+    </section>
+
+    <!-- ЗДОРОВЬЕ СИСТЕМЫ (A-14) -->
+    <section class="view" id="view-health">
+      <button class="con-back" onclick="closeHealthScreen()">‹ <span data-ru="Обзор" data-en="Overview">Обзор</span></button>
+      <h1 data-ru="Здоровье системы" data-en="System health">Здоровье системы</h1>
+
+      <div class="tabs" id="healthTabs">
+        <button class="tab-btn active" id="healthTabBtn-health" onclick="switchHealthTab('health')"
+          data-ru="Здоровье" data-en="Health">Здоровье</button>
+        <button class="tab-btn" id="healthTabBtn-logs" onclick="switchHealthTab('logs')"
+          data-ru="Логи" data-en="Logs">Логи</button>
+      </div>
+
+      <!-- ВКЛАДКА: ЗДОРОВЬЕ -->
+      <div class="tab-panel active" id="healthTab-health">
+        <div class="con-sh" data-ru="Подсистемы" data-en="Subsystems">Подсистемы</div>
+        <div class="con-list" id="healthComponentsList">
+          <div class="con-empty" data-ru="Загрузка…" data-en="Loading…">Загрузка…</div>
+        </div>
+
+        <div class="con-sh" data-ru="Диагностический отчёт" data-en="Diagnostic report">Диагностический отчёт</div>
+        <p class="muted" data-ru="Отчёт включает статус подсистем, последние строки журнала (уже обезличены) и последние события — без паролей/токенов/e-mail в открытом виде. В Фазе 0 нет внешнего получателя: «отправить» означает сохранить файл отчёта на этом устройстве."
+          data-en="The report includes subsystem status, recent log lines (already de-identified) and recent events — no plaintext passwords/tokens/emails. Phase 0 has no external recipient: “send” means saving the report file on this device.">
+          Отчёт включает статус подсистем, последние строки журнала (уже обезличены) и последние события — без паролей/токенов/e-mail в открытом виде. В Фазе 0 нет внешнего получателя: «отправить» означает сохранить файл отчёта на этом устройстве.
+        </p>
+        <div class="con-actions">
+          <button class="btn-accent" id="healthReportBtn" onclick="openReportConsent()"
+            data-ru="📤 Отправить отчёт" data-en="📤 Send report">📤 Отправить отчёт</button>
+        </div>
+        <div class="con-status" id="healthReportStatus" hidden></div>
+
+        <div class="report-consent" id="reportConsentBox" hidden>
+          <p data-ru="Подтвердите: отчёт будет сформирован из данных этого устройства (статус подсистем, обезличенные логи, недавние события) и сохранён локальным файлом — никуда автоматически не отправляется."
+            data-en="Confirm: the report will be assembled from this device's data (subsystem status, de-identified logs, recent events) and saved as a local file — nothing is sent anywhere automatically.">
+            Подтвердите: отчёт будет сформирован из данных этого устройства (статус подсистем, обезличенные логи, недавние события) и сохранён локальным файлом — никуда автоматически не отправляется.
+          </p>
+          <label class="report-consent-cb">
+            <input type="checkbox" id="reportConsentCheckbox" onchange="handleReportConsentToggle()">
+            <span data-ru="Я согласен сформировать и скачать диагностический отчёт" data-en="I agree to generate and download the diagnostic report">
+              Я согласен сформировать и скачать диагностический отчёт
+            </span>
+          </label>
+          <div class="con-actions">
+            <button class="btn-accent" id="reportConfirmBtn" onclick="handleSendReport()" disabled
+              data-ru="Сформировать и скачать" data-en="Generate & download">Сформировать и скачать</button>
+            <button class="btn-ghost" onclick="closeReportConsent()" data-ru="Отмена" data-en="Cancel">Отмена</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ВКЛАДКА: ЛОГИ -->
+      <div class="tab-panel" id="healthTab-logs">
+        <div class="con-sh" data-ru="Логи модулей" data-en="Module logs">Логи модулей</div>
+        <div class="con-actions">
+          <select id="logsLevelFilter" onchange="loadHealthLogs()">
+            <option value="" data-ru="Все уровни" data-en="All levels">Все уровни</option>
+            <option value="ERROR">ERROR</option>
+            <option value="WARNING">WARNING</option>
+            <option value="INFO">INFO</option>
+            <option value="DEBUG">DEBUG</option>
+          </select>
+          <button class="btn-ghost" onclick="loadHealthLogs()" data-ru="Обновить" data-en="Refresh">Обновить</button>
+        </div>
+        <div class="con-list" id="healthLogsList">
+          <div class="con-empty" data-ru="Загрузка…" data-en="Loading…">Загрузка…</div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script src="assets/app.js"></script>
+</body>
+</html>

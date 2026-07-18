@@ -1,0 +1,307 @@
+name: Windows build and smoke test (A-21)
+
+# A-21: builds Hranix Shield's Windows native installer on a REAL
+# windows-latest GitHub Actions runner. PyInstaller does not cross-compile
+# (see docs/план-спецификация-фаза-0-нативные-установщики-2026-07-17.md's
+# A-21 section) — this workflow is the only place in the project where
+# packaging/windows/*.spec / installer.iss actually get exercised for
+# real, since the development environment that wrote them is macOS.
+#
+# Honesty note (principle 8, docs/инструкция-разработка-фаза-0-нативные-
+# установщики-2026-07-17.md): this file was written and syntax-checked
+# (YAML + actionlint) in a session with NO access to GitHub Actions itself
+# — it has never actually been executed as of the commit that adds it.
+# The first real run happens whenever this is pushed to GitHub. Do not
+# treat this file's mere existence, or even a clean review of its
+# contents, as "CI is green" — only an observed run in the Actions tab
+# proves that. See packaging/windows/README.md for the full "what this
+# does and does not prove" breakdown.
+#
+# What a green run WOULD prove, precisely (not "it works" in general):
+#   1. the PyInstaller onedir bundle builds without error on a real
+#      Windows Python 3.12 install;
+#   2. the Inno Setup script compiles and the resulting installer.exe
+#      installs silently without error;
+#   3. the installed Hranix Shield.exe starts, answers /health, and lets
+#      a bootstrap admin log in — on an ACTUAL Windows OS (not a Linux
+#      container the way Docker deployment's own os_firewall/Osquery
+#      checks are limited, see the plan-spec's whole motivation section);
+#   4. the "Периметр" console's os_firewall connector reports a value
+#      that agrees with `netsh advfirewall`'s own real answer on this
+#      exact machine (see the last smoke-test step below) — this is the
+#      most direct evidence available in CI that the connector is reading
+#      the runner's REAL Windows Defender Firewall, not a fabricated
+#      value, though the runner itself is still not literally "a user's
+#      laptop" (see README.md's honesty section for that distinction);
+#   5. `infi.systray`'s ANSI-API-based text encoding (see
+#      packaging/windows/test/check_tray_locale.py) does not RAISE when
+#      given this app's real Cyrillic menu labels under this runner's
+#      actual locale — it does NOT prove those labels render correctly on
+#      screen (see that script's own docstring and README.md's honesty
+#      section for why that specific gap needs a human looking at a real
+#      Windows screen, not something CI can do).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packaging/windows/**"
+      - "server/**"
+      - ".github/workflows/windows-build.yml"
+  pull_request:
+    paths:
+      - "packaging/windows/**"
+      - "server/**"
+      - ".github/workflows/windows-build.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build-install-smoke-test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      # Bootstrap-admin credentials for THIS smoke test run only — not a
+      # real product secret (Phase 0 has no multi-tenant users yet, this
+      # process is torn down at the end of the job either way). A real
+      # repo secret can override the fallback if the architect wants a
+      # less-guessable value; the fallback exists so this workflow needs
+      # zero pre-configuration to run at all (see the A-21 task brief's
+      # own suggestion: "воркфлоу сам создаёт config.env").
+      SMOKE_ADMIN_USERNAME: ci-smoke-admin
+      SMOKE_ADMIN_PASSWORD: ${{ secrets.WINDOWS_SMOKE_TEST_PASSWORD || 'ci-smoke-test-only-8f3a1c-not-a-real-secret' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Create a lean build venv and install packaged requirements
+        # Deliberately NOT the full dev server/requirements.txt (torch,
+        # sentence-transformers, etc. — Phase 2 deps, see
+        # requirements-packaged.txt's own header comment) — same "lean
+        # build venv" convention already documented in
+        # packaging/macos/README.md and packaging/linux/README.md.
+        run: |
+          python -m venv build-venv
+          build-venv\Scripts\pip.exe install --upgrade pip
+          build-venv\Scripts\pip.exe install -r server\requirements-packaged.txt
+
+      - name: Check infi.systray's Cyrillic menu-text encoding on this runner's locale
+        # See packaging/windows/test/check_tray_locale.py's own module
+        # docstring for exactly what this does and does not prove — in
+        # short: confirms constructing/starting a real SysTrayIcon with
+        # this app's actual Cyrillic labels ("Открыть панель"/"Выход")
+        # does not raise on this runner, and reports (without failing the
+        # build over it) whether infi.systray's own encode_for_locale()
+        # helper can actually round-trip those labels through this
+        # runner's default locale encoding — a real, pre-existing gap in
+        # infi.systray==0.1.12.1's ANSI-API design if it cannot, not
+        # something this step can fix. Run against the SAME build-venv
+        # just created above (already has infi.systray installed via
+        # requirements-packaged.txt), before the PyInstaller build, so
+        # this fails fast/cheaply if the tray library itself cannot even
+        # construct on this runner at all.
+        run: |
+          build-venv\Scripts\python.exe packaging\windows\test\check_tray_locale.py
+
+      - name: Build PyInstaller onedir bundle
+        run: |
+          build-venv\Scripts\pyinstaller.exe packaging\windows\hranix-shield.spec --distpath packaging\windows\dist --workpath packaging\windows\build --noconfirm
+
+      - name: Locate (or install) the Inno Setup compiler
+        id: iscc
+        # windows-latest's runner image documents Inno Setup as
+        # preinstalled software (see actions/runner-images' own software
+        # manifest for windows-2022) — this step trusts that but does NOT
+        # assume it blindly: it falls back to installing via chocolatey
+        # (also preinstalled on every GitHub-hosted Windows runner) if the
+        # expected path is missing, so a future runner-image change that
+        # drops Inno Setup does not silently break this workflow.
+        run: |
+          $candidates = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+            (Join-Path $Env:ProgramFiles 'Inno Setup 6\ISCC.exe')
+          )
+          $found = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $found) {
+            Write-Host "Inno Setup not found at the expected preinstalled path(s) - installing via choco"
+            choco install innosetup -y --no-progress
+            $found = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $found) {
+            throw "ISCC.exe still not found after choco install - candidates were: $($candidates -join ', ')"
+          }
+          Write-Host "Using Inno Setup compiler at $found"
+          echo "path=$found" >> $Env:GITHUB_OUTPUT
+
+      - name: Compile the Inno Setup installer
+        run: |
+          & "${{ steps.iscc.outputs.path }}" packaging\windows\installer.iss
+
+      - name: Write bootstrap-admin config.env before the first run
+        # Same platformdirs data directory server/app/config.py's
+        # is_packaged()/_packaged_data_dir() resolves to at runtime
+        # (verified against platformdirs==4.10.0's own windows.py source,
+        # 2026-07-18: user_data_dir(appname, appauthor) with the default
+        # roaming=False resolves to CSIDL_LOCAL_APPDATA, i.e.
+        # %LOCALAPPDATA%\<appauthor>\<appname> - NOT %APPDATA% as an
+        # earlier draft of the task brief suggested; corrected here
+        # against the actual library source, not assumed) - writing
+        # config.env here BEFORE the installed exe's first launch is
+        # exactly the approach the A-21 task brief itself suggested as
+        # the way to get a bootstrap admin into a CI run with no
+        # interactive setup step.
+        run: |
+          $dataDir = Join-Path $Env:LOCALAPPDATA 'Hranix\Hranix Shield'
+          New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+          $envLines = @(
+            "SERVER_PORT=8080",
+            "BOOTSTRAP_ADMIN_USERNAME=$Env:SMOKE_ADMIN_USERNAME",
+            "BOOTSTRAP_ADMIN_PASSWORD=$Env:SMOKE_ADMIN_PASSWORD"
+          )
+          Set-Content -Path (Join-Path $dataDir 'config.env') -Value $envLines -Encoding utf8
+          Write-Host "wrote config.env to $dataDir"
+
+      - name: Install the built installer silently
+        # /VERYSILENT /SUPPRESSMSGBOX, exactly as the task brief specifies
+        # - a fully unattended install with no wizard UI and no message
+        # boxes that would otherwise block waiting for a click that never
+        # comes on a headless CI runner. PrivilegesRequired=admin in
+        # installer.iss means this needs an elevated shell - GitHub's
+        # hosted Windows runners run the job as a local administrator
+        # account by default, so no explicit elevation step is added here
+        # (not independently re-verified in this session beyond that being
+        # GitHub's own documented runner behaviour).
+        run: |
+          $proc = Start-Process -FilePath "packaging\windows\dist\installer\hranix-shield-setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOX","/NORESTART" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) {
+            throw "installer exited with code $($proc.ExitCode)"
+          }
+          Write-Host "installer exited 0"
+
+      - name: Start the installed app and wait for /health
+        id: start_app
+        # Not a blind sleep - polls /health with a generous 60s deadline,
+        # same "poll, don't guess a fixed delay" discipline
+        # server/launcher.py's own _wait_for_health() already applies
+        # in-process (see that module's docstring point 4); this loop is
+        # the OUTSIDE-the-process equivalent, since CI has no access to
+        # the packaged app's internals, only its HTTP surface.
+        run: |
+          $exe = Join-Path $Env:ProgramFiles 'Hranix Shield\Hranix Shield.exe'
+          if (-not (Test-Path $exe)) {
+            throw "installed exe not found at $exe - install may have silently failed"
+          }
+          $proc = Start-Process -FilePath $exe -PassThru
+          Write-Host "started pid $($proc.Id)"
+          echo "pid=$($proc.Id)" >> $Env:GITHUB_OUTPUT
+
+          $deadline = (Get-Date).AddSeconds(60)
+          $healthy = $false
+          while ((Get-Date) -lt $deadline) {
+            try {
+              $resp = Invoke-WebRequest -Uri "http://127.0.0.1:8080/health" -UseBasicParsing -TimeoutSec 2
+              if ($resp.StatusCode -eq 200) { $healthy = $true; break }
+            } catch {
+              Start-Sleep -Seconds 2
+            }
+          }
+          if (-not $healthy) {
+            throw "installed app did not answer /health within 60s"
+          }
+          Write-Host "installed app is healthy"
+
+      - name: Verify bootstrap-admin login
+        id: login
+        run: |
+          $body = @{ username = $Env:SMOKE_ADMIN_USERNAME; password = $Env:SMOKE_ADMIN_PASSWORD } | ConvertTo-Json
+          $resp = Invoke-WebRequest -Uri "http://127.0.0.1:8080/auth/login" -Method Post -Body $body -ContentType "application/json" -UseBasicParsing
+          $json = $resp.Content | ConvertFrom-Json
+          if (-not $json.access_token) {
+            throw "login response had no access_token: $($resp.Content)"
+          }
+          Write-Host "bootstrap-admin login succeeded, got a real JWT"
+          echo "token=$($json.access_token)" >> $Env:GITHUB_OUTPUT
+
+      - name: Compare the "Периметр" console against netsh's real answer on this host
+        # This is the one check in this workflow that speaks directly to
+        # the whole reason A-19..A-22 exist (see the plan-spec's own
+        # motivation section): os_firewall.py's Windows branch
+        # (_windows_firewall_active(), server/app/services/mcp/
+        # security_connectors/os_firewall.py) was written from documented
+        # `netsh` output only, never verified against a real Windows host
+        # (that file's own docstring says so explicitly) - a Docker
+        # deployment of this same code can NEVER see anything but a Linux
+        # container's own state here. This step runs the exact same
+        # `netsh advfirewall show allprofiles` command the connector
+        # itself calls, parses it the same way (a per-profile "State
+        # ON/OFF" line), and fails the build if the console's own answer
+        # disagrees with that ground truth - but only when the console
+        # reports a real "ok" status; a "permission_denied"/"unreachable"
+        # result is logged, not asserted against, since that would be a
+        # different (also real, but separately actionable) finding, not
+        # this check's job.
+        run: |
+          $authHeader = @{ Authorization = "Bearer $($Env:LOGIN_TOKEN)" }
+          $resp = Invoke-WebRequest -Uri "http://127.0.0.1:8080/security/consoles/perimeter" -Headers $authHeader -UseBasicParsing
+          $json = $resp.Content | ConvertFrom-Json
+          Write-Host "GET /security/consoles/perimeter ->"
+          Write-Host ($json | ConvertTo-Json -Depth 10)
+
+          $netshOutput = (netsh advfirewall show allprofiles | Out-String)
+          Write-Host "netsh advfirewall show allprofiles ->"
+          Write-Host $netshOutput
+
+          $connectorStatus = $json.connectors.os_firewall.status
+          $reportedActive = $json.metrics.firewall_active
+          Write-Host "API connectors.os_firewall.status=$connectorStatus ; API metrics.firewall_active=$reportedActive"
+
+          if ($connectorStatus -ne "ok") {
+            Write-Host "connector status is '$connectorStatus', not 'ok' - skipping the netsh cross-check honestly rather than asserting against it (see this step's own comment)"
+          } else {
+            $states = [regex]::Matches($netshOutput, "State\s+(ON|OFF)") | ForEach-Object { $_.Groups[1].Value.ToUpperInvariant() }
+            if ($states.Count -eq 0) {
+              throw "could not parse any 'State ON|OFF' line out of netsh's own output - this check cannot be trusted, failing loudly instead of silently passing"
+            }
+            $allOn = ($states | Where-Object { $_ -ne "ON" }).Count -eq 0
+            Write-Host "netsh-derived allOn=$allOn (profiles: $($states -join ', '))"
+            if ($reportedActive -ne $allOn) {
+              throw "os_firewall console (active=$reportedActive) disagrees with netsh's own real-host answer (allOn=$allOn) - the connector is not reading this machine's real firewall state correctly"
+            }
+            Write-Host "os_firewall console agrees with netsh's real-host state - the connector is reading the ACTUAL Windows Defender Firewall of this runner, not a container"
+          }
+        env:
+          LOGIN_TOKEN: ${{ steps.login.outputs.token }}
+
+      - name: Stop the installed app
+        if: always()
+        # A hard Stop-Process, not the graceful SIGTERM-equivalent shutdown
+        # A-22's Linux service tested (systemctl stop -> handle.stop()) -
+        # this tray app has no remote-triggerable "click Выход" from a CI
+        # script, and Windows GUI apps have no SIGTERM equivalent to send
+        # externally the way `systemctl stop`/`kill` do on Linux. This is
+        # test teardown only, not a claim that graceful shutdown was
+        # exercised on Windows - flagged honestly, not silently equated
+        # with A-22's actual graceful-stop verification.
+        run: |
+          $pidValue = "${{ steps.start_app.outputs.pid }}"
+          if ($pidValue) {
+            Stop-Process -Id $pidValue -Force -ErrorAction SilentlyContinue
+            Write-Host "stopped pid $pidValue"
+          }
+
+      - name: Upload the built installer as a workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hranix-shield-windows-installer
+          path: packaging/windows/dist/installer/hranix-shield-setup.exe
+          if-no-files-found: warn

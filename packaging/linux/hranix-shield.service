@@ -1,0 +1,54 @@
+[Unit]
+Description=Hranix Shield — free open-source security panel (Phase 0)
+Documentation=https://github.com/hranix/ai-assistant
+# Networking (not a full graphical/multi-user target) is all this needs —
+# it serves plain HTTP on 127.0.0.1, no desktop session involved (see
+# packaging/linux/hranix_shield_service.py's docstring on why this build
+# has no browser-opening/GUI code at all).
+After=network.target
+
+[Service]
+Type=simple
+# System service (not `systemctl --user`) — architect decision #1, see
+# docs/план-спецификация-фаза-0-нативные-установщики-2026-07-17.md's A-22
+# section for the DoD this ties back to, and the A-22 task brief for the
+# full reasoning: the target audience for a Debian/Ubuntu build is often a
+# headless server with no guaranteed desktop session, and `systemctl --user`
+# requires `loginctl enable-linger` plus an active user session to survive
+# reboots/logout — unnecessary fragility for this audience. hranix-shield
+# is a dedicated, unprivileged SYSTEM user (created by postinst, see
+# packaging/linux/debian/postinst) — never root.
+User=hranix-shield
+Group=hranix-shield
+# Explicit, not relied-upon-implicitly: modern systemd (>= 232) sets HOME
+# from the User= account's own passwd entry automatically, so this line is
+# not strictly required on a recent systemd — but `app/config.py`'s
+# `platformdirs.user_data_dir(...)` (A-19) resolves relative to `$HOME` on
+# Linux (XDG Base Directory spec fallback), and this project's own
+# discipline (CLAUDE.md: don't rely on undocumented/implicit behaviour
+# silently) is to spell out the dependency rather than assume every target
+# systemd version + PAM config combination gets this right on its own.
+# /var/lib/hranix-shield is the same home directory postinst creates via
+# `useradd --home-dir /var/lib/hranix-shield --create-home` — see that
+# script's own comment for why `--create-home` (a REAL, populated home
+# directory, not just a passwd-file entry) matters here.
+Environment=HOME=/var/lib/hranix-shield
+ExecStart=/opt/hranix-shield/hranix-shield
+WorkingDirectory=/opt/hranix-shield
+Restart=on-failure
+RestartSec=5
+
+# --- Hardening (defence in depth; not the A-22 DoD itself, but cheap and
+# standard for a systemd system service running as a dedicated
+# unprivileged user with no need for any of what it disables) ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# The service's actual read/write need: its own home/data directory (the
+# platformdirs base — DB, secrets, restic repo, ClamAV quarantine, log —
+# see app/config.py's _packaged_data_dir()/_packaged_log_dir()). Everything
+# else under ProtectSystem=strict stays read-only.
+ReadWritePaths=/var/lib/hranix-shield
+
+[Install]
+WantedBy=multi-user.target

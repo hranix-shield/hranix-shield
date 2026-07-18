@@ -1,0 +1,63 @@
+# --- Python ---
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# --- Env / секреты ---
+.env
+.env.local
+.env.staging
+.env.production
+*.pem
+*.key
+infra/deploy/certs/
+
+# --- Данные и runtime-артефакты (локальные, не редистрибутим) ---
+data/*
+!data/.gitkeep
+*.db
+*.db-journal
+*.sqlite3
+logs/
+*.log
+
+# --- Локальные модели (LLM/ASR/TTS/эмбеддинги — качаются скриптом) ---
+models/
+server/models/
+
+# --- Вектор-индекс (пересобираемый) ---
+data/vector/
+qdrant_storage/
+
+# --- Rust / Tauri (клиенты) ---
+clients/**/target/
+clients/**/node_modules/
+clients/**/dist/
+clients/**/.tauri/
+
+# --- Нативные установщики (A-20..A-22): собранные бинарники, не коммитим ---
+# Собираются локально из packaging/*/*.spec + server/requirements-packaged.txt
+# (см. packaging/macos/README.md) — большие бинарные артефакты, не исходники.
+packaging/*/build/
+packaging/*/dist/
+# A-22: packaging/linux/build-deb.sh's staging tree (assembled from the
+# already-ignored dist/ bundle + the tracked debian/ scripts) — same
+# "rebuildable artifact, not a source file" reasoning as build/ and dist/.
+packaging/linux/deb-staging/
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+.obsidian/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
