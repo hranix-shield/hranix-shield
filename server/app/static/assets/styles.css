@@ -10,10 +10,42 @@
   --good:#2E9E5B; --warn:#B8801A; --crit:#CB463E;
   --warn-soft:#FBF1DC; --crit-soft:#FBE7E5; --good-soft:#E4F3EA;
   --good-t:#1E7A42; --warn-t:#8A6111; --crit-t:#A5342D; --accent-t:#14544C;
-  --crit-b:#F0C9C5; --warn-b:#EAD9AE;
+  --crit-b:#F0C9C5; --warn-b:#EAD9AE; --good-b:#BFE3CC;
   --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   --mono:ui-monospace,"SF Mono",Menlo,monospace;
+  /* Замечание пользователя (2026-07-31): элементы консоли (плитки метрик,
+     кнопки, график, списки, «Настройки») росли по одной из разных задач
+     каждый со своим числом (chart-card/con-list/con-hint — 760px,
+     st-list — 640px, а kb-stats/con-actions вообще без ограничения,
+     во всю ширину .content) — визуально «лесенка» из невыровненных по
+     правому краю карточек. Один общий токен вместо магических чисел —
+     единая колонка ниже. .con-list-wide (980px) — осознанное отдельное
+     исключение только для широкой таблицы `network`, не часть этого ряда. */
+  --con-w:760px;
 }
+
+/* A-48: тёмная тема — токены перенесены 1-в-1 из
+   docs/prototypes/интерфейс-прототип-v34.html's .page.dark (та же палитра,
+   что уже дала :root выше для светлой темы — см. комментарий в шапке
+   файла). --good/--warn/--crit/--good-b сознательно НЕ переопределены —
+   те же насыщенные базовые цвета остаются читаемыми на обоих фонах, то же
+   решение, что уже сделано в v34. Класс — на :root (<html>), не на
+   .panel/.login-screen отдельно, чтобы один переключатель (app.js's
+   applyTheme) управлял обоими экранами сразу. */
+:root.dark{
+  --bg:#0F141B; --surface:#1A222D; --surface2:#161D27; --surface3:#232E3B;
+  --ink:#E6EBF1; --ink2:#A8B4C2; --muted:#7A8794; --line:#2A3441;
+  --accent:#17A392; --accent-d:#5BD3C3; --accent-soft:#12302B;
+  --good-soft:#173224; --warn-soft:#3A2F15; --crit-soft:#3D211F;
+  --good-t:#7EE0A6; --warn-t:#F2C56B; --crit-t:#F4A29C; --accent-t:#9BD9CE;
+  --crit-b:#5A2A26; --warn-b:#55431C;
+}
+/* Единственные два места во всём файле с хардкод-цветом вместо var(--xxx)
+   (см. план-спецификацию A-48 — весь остальной CSS уже проходит через
+   переменные и подхватывает тёмную палитру выше автоматически) — тёмный
+   аналог тем же приёмом, что v34's .page.dark .win/.sec-card.warn/.crit. */
+:root.dark .login-screen{background:radial-gradient(900px 480px at 70% -10%, #141B24, transparent), var(--bg);}
+:root.dark .sec-card.degraded,:root.dark .sec-card.down{background:var(--surface);}
 
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
@@ -54,6 +86,9 @@ button{font-family:inherit; cursor:pointer;}
 }
 .lang-tgl:hover,.chip-btn:hover{border-color:var(--accent); color:var(--accent);}
 .login-screen .lang-tgl{position:absolute; top:20px; right:20px;}
+/* A-48: второй чип (тема) на том же экране входа — тот же right:20px
+   столкнул бы его с #langTglLogin, сдвигаем влево на ширину кнопки+отступ. */
+.login-screen #themeTglLogin{right:66px;}
 
 /* ---------- панель ---------- */
 .panel{min-height:100vh; display:flex; flex-direction:column;}
@@ -90,6 +125,16 @@ button{font-family:inherit; cursor:pointer;}
 button.sec-card{
   display:flex; align-items:center; gap:12px; background:var(--surface); border:1px solid var(--line);
   border-radius:11px; padding:13px 14px; text-align:left; width:100%; font:inherit; transition:.14s;
+  /* A-48 follow-up: real bug found live (2026-08-16) — a <button> element
+     does NOT inherit `color` from the document by default (browser
+     user-agent stylesheets give it its own black/system colour), unlike
+     every other element in this file. Invisible in the light theme by
+     coincidence only (the UA default happens to be near-black, same as
+     --ink's light value) — the dark theme exposed it: tile titles
+     (.sec-cbody b) rendered pure black on a dark card, unreadable. Every
+     OTHER button class in this file (.btn-ghost/.chip-btn/.pill/...)
+     already sets its own explicit colour — this was the one overlooked. */
+  color:var(--ink);
 }
 button.sec-card:hover{border-color:var(--accent);}
 .sec-card.degraded{border-color:var(--warn-b); background:#FEFBF4;}
@@ -126,34 +171,182 @@ button.sec-card:hover{border-color:var(--accent);}
 .con-power{margin-left:auto; border:0; border-radius:20px; padding:6px 14px; font-size:11.5px; font-weight:600; cursor:pointer; background:var(--good-soft); color:var(--good-t);}
 .con-power.off{background:var(--surface3); color:var(--muted);}
 .con-power:disabled{opacity:.6; cursor:wait;}
-.con-error{background:var(--crit-soft); color:var(--crit-t); border-radius:8px; padding:9px 12px; font-size:12.5px; margin-bottom:14px;}
+.con-error{background:var(--crit-soft); color:var(--crit-t); border-radius:8px; padding:9px 12px; font-size:12.5px; margin-bottom:14px; max-width:var(--con-w);}
 .con-sh{font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:0 0 9px 2px;}
 
-.kb-stats{display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:18px;}
+/* Замечание пользователя (2026-07-31): число колонок теперь по фактическому
+   числу плиток текущей консоли (app.js's renderConsole задаёт --kb-n) — не
+   зафиксировано на 4, чтобы у consoли с 5-6 метриками (напр. perimeter)
+   всё помещалось в один ряд, а не расползалось/пустовало. */
+.kb-stats{display:grid; grid-template-columns:repeat(var(--kb-n,4),1fr); gap:10px; margin-bottom:18px; max-width:var(--con-w);}
 .kbstat{background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:12px 14px;}
 .kbstat-n{font-size:17px; font-weight:700; letter-spacing:-.02em; font-variant-numeric:tabular-nums; display:block;}
 .kbstat-l{font-size:11px; color:var(--ink2); margin-top:3px; line-height:1.3;}
+/* Замечание пользователя (2026-07-31): необязательная подсветка плитки по
+   смыслу значения (app.js's <metricLabel>.tileVariant) — сейчас только у
+   perimeter (см. CONSOLE_META.perimeter.metricLabels), но класс общий для
+   любой консоли, которая захочет того же в будущем. */
+.kbstat-good{background:var(--good-soft); border-color:var(--good-b);}
+.kbstat-good .kbstat-n{color:var(--good-t);}
+.kbstat-bad{background:var(--crit-soft); border-color:var(--crit-b);}
+.kbstat-bad .kbstat-n{color:var(--crit-t);}
+.kbstat-muted{background:var(--surface2);}
 @media (max-width:900px){ .kb-stats{grid-template-columns:repeat(2,1fr);} }
 
-.chart-card{background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin-bottom:18px; max-width:760px;}
+.chart-card{background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin-bottom:18px; max-width:var(--con-w);}
 .chart-cardh{font-size:13px; font-weight:650; margin-bottom:8px;}
 .chart-empty{
   height:80px; display:flex; align-items:center; justify-content:center;
   color:var(--muted); font-size:12px; background:var(--surface2); border-radius:8px;
+  text-align:center; padding:0 16px;
 }
+/* A-26: plain <canvas> bar chart (see app.js's drawBarChart) — no charting
+   library, project convention "минимум зависимостей". Sized in CSS
+   pixels; app.js reads clientWidth/clientHeight and scales the backing
+   bitmap by devicePixelRatio for crisp rendering on retina displays. */
+.chart-canvas{ width:100%; height:120px; display:block; }
 
-.con-list{background:var(--surface); border:1px solid var(--line); border-radius:12px; overflow:hidden; margin-bottom:18px; max-width:760px;}
+/* A-51: «Сеть»'s connections table — merges local/remote address:port and
+   sent/received bytes each into ONE column (was 4 separate 110px-flex
+   columns across 2 conceptual pairs, wrapping onto a second line at
+   typical widths — see the A-50…A-54 план-спецификация). `.con-row-net`
+   is an ADDITIVE class alongside the shared `.con-row` (never override
+   that shared rule's own `gap` globally — every other console's list
+   still uses the wider default). `.con-cell-stack` is generic (used for
+   both the 2-line HEADER cells — label+unit — and the 2-line BODY cells
+   — two stacked values), same "small reusable primitive" approach every
+   other `.con-*` helper class in this file already takes. */
+.con-row-net{ gap:8px; }
+.con-cell-stack{ display:flex; flex-direction:column; gap:1px; line-height:1.35; }
+.con-cell-stack-sub{ font-size:10px; font-weight:600; color:var(--muted); }
+.con-cell-stack-mono{ font-family:var(--mono); font-size:11px; }
+
+/* Замечание пользователя (2026-07-31): двухсерийная диаграмма (только
+   «Защита периметра», see app.js's drawGroupedBarChart) — цвет+подпись
+   вместе (colorblind-safe, тот же принцип, что и .log-lvl'а точка+текст),
+   не полагаемся на один только цвет. */
+.chart-legend{display:flex; gap:16px; margin-bottom:8px; flex-wrap:wrap;}
+.chart-legend-item{display:inline-flex; align-items:center; gap:6px; font-size:11.5px; color:var(--ink2);}
+.chart-legend-dot{width:8px; height:8px; border-radius:50%; display:inline-block; flex-shrink:0;}
+.chart-legend-dot-a{background:var(--accent);}
+.chart-legend-dot-b{background:var(--muted);}
+
+/* A-41: «Карта соединений» (network console, app.js's drawConnectionsMap)
+   reuses .chart-canvas's sizing rules but needs real height for an
+   equirectangular world grid to read as a map rather than a sliver — a
+   roughly 2:1 width:height ratio at typical .chart-card content widths.
+   Same-specificity override, ordered after .chart-canvas above so it wins
+   for elements carrying both classes.
+
+   A-50: real bug found live (2026-08-17) — 220px was a flattened
+   approximation from BEFORE A-49 added the real land outline (against a
+   plain grid a squashed ratio barely mattered); against real coastlines
+   it read as visibly squashed. Measured live at this card's actual
+   on-screen width (~726px at a typical 1280px viewport) — a true 2:1
+   ratio wants ~363px; 360px is the practical round number used here. */
+.map-canvas{ height:360px; cursor:default; }
+
+/* Замечание пользователя (2026-07-23): длинные списки (открытые порты,
+   соединения) занимали неограниченную высоту страницы — теперь общая
+   для всех .con-list ограниченная высота со своим скроллом, а не
+   раздувание всей страницы. overflow-x остаётся hidden (сохраняет
+   скругление углов по горизонтали), overflow-y — auto (не факт, что
+   scrollbar нужен: короткие списки вроде модалки порта/4 строк не
+   переполнят 420px и скролл просто не появится). */
+.con-list{background:var(--surface); border:1px solid var(--line); border-radius:12px; overflow-x:hidden; overflow-y:auto; max-height:420px; margin-bottom:18px; max-width:var(--con-w);}
 .con-row{display:flex; align-items:center; gap:12px; padding:10px 14px; border-bottom:1px solid var(--line); font-size:12.5px; color:var(--ink2); flex-wrap:wrap;}
 .con-row:last-child{border-bottom:0;}
 .con-row .cr-k{font-weight:600; color:var(--ink);}
 .con-empty{padding:16px; text-align:center; color:var(--muted); font-size:12.5px;}
 
-.con-actions{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:18px;}
+/* A-35: short static explainer above a console's event list (today only
+   `logs`, see CONSOLE_META.logs.listHint in app.js) — same "surface2 card"
+   language as .chart-empty above, just for a permanent hint instead of a
+   transient empty-state message. */
+.con-hint{font-size:12.5px; line-height:1.5; color:var(--ink2); background:var(--surface2); border:1px solid var(--line); border-radius:10px; padding:10px 14px; margin-bottom:12px; max-width:var(--con-w);}
+
+/* A-35: `logs`' per-entry level indicator — a colored dot (never the raw
+   English `level` keyword, see app.js's LOG_LEVEL_META/describeLogLevel)
+   plus its localized name, so the color isn't the only cue (colorblind-
+   safe) and the tone stays honestly extensible to values this project
+   hasn't seen live yet (warning/error/critical), not just today's sole
+   real-world value ("notice"). */
+.log-lvl{display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:600; flex-shrink:0;}
+.log-lvl-dot{width:8px; height:8px; border-radius:50%; flex-shrink:0; background:var(--muted);}
+.log-lvl-neutral{color:var(--ink2);}
+.log-lvl-neutral .log-lvl-dot{background:var(--muted);}
+.log-lvl-warn{color:var(--warn-t);}
+.log-lvl-warn .log-lvl-dot{background:var(--warn);}
+.log-lvl-crit{color:var(--crit-t);}
+.log-lvl-crit .log-lvl-dot{background:var(--crit);}
+
+/* A-35: truncated FIM file path (see app.js's truncateFimPath) — `title`
+   (set in app.js) carries the untouched full path, same pattern as
+   drawBarChart's canvas.title. `cursor:help` hints that hovering reveals
+   more, same idea `.kbstat`'s tipRu/tipEn tooltip already relies on. */
+.log-file{font-family:var(--mono); font-size:11px; color:var(--ink2); cursor:help;}
+.log-desc{color:var(--ink);}
+
+/* A-40: `network`'s table grew two columns (Страна/Country,
+   Репутация/Reputation) — see app.js's renderConsoleList `network` branch
+   for why a wider variant is needed so 7 columns don't wrap onto a second
+   line inside the shared `.con-list`'s default max-width. */
+.con-list-wide{max-width:980px;}
+/* A-54: the list section's title + (network-only) export button share one
+   row — `justify-content:space-between` keeps the title left and the
+   button right without a fixed gap fighting the title's variable length.
+   980px matches `.con-list-wide` above (the only console that actually
+   shows this button today, `network`, uses that wider table) so the
+   button's right edge lines up with the table's own right edge below it —
+   harmless for narrower consoles too, since the button stays hidden there
+   (see app.js's renderConsole, `#conListExportBtn`). */
+/* Замечание пользователя (2026-08-17): заголовок списка сидел вплотную к
+   карточке списка ниже (0px, было видно на «Сеть») — `.con-sh`'s обычный
+   нижний отступ 9px (styles.css выше) обнулялся на ВНУТРЕННЕМ элементе,
+   т.к. эта строка используется для #conListTitle на ВСЕХ консолях, не
+   только `network` (кнопка экспорта просто скрыта для остальных), значит
+   регрессия задевала все консоли со списком, не только «Сеть». Отступ
+   перенесён на саму строку-обёртку — тот же зазор, что у обычного
+   одиночного `.con-sh`, просто на всю строку целиком. */
+.con-list-header{display:flex; align-items:center; justify-content:space-between; gap:12px; max-width:980px; margin:0 0 9px 2px;}
+.con-list-header .con-sh{margin:0;}
+/* Замечание пользователя (2026-08-17): выглядит красивее и гармоничнее
+   рядом с заголовком списка как текстовая ссылка, не как отдельная кнопка
+   с фоном/рамкой — убран `.btn-ghost`, вся форма кнопки переопределена
+   здесь заново. */
+.con-list-export-btn{background:none; border:0; padding:0; font-size:11.5px; font-weight:600; color:var(--accent);}
+.con-list-export-btn:hover{color:var(--accent-d); text-decoration:underline;}
+.con-list-export-btn:disabled{color:var(--muted); cursor:not-allowed; text-decoration:none;}
+/* Замечание пользователя (2026-08-17): успех-сообщение после клика было
+   короче ширины окна — `.con-status`'s обычный `max-width:var(--con-w)`
+   (760px) не совпадает с шириной таблицы `network` (`.con-list-wide`,
+   980px), это единственная консоль, где вообще виден этот статус-бокс
+   (см. `#conListExportBtn`), поэтому просто выравниваем на её ширину. */
+#conListExportStatus{max-width:980px;}
+/* Soft red tint on a whole connection row CrowdSec's active decisions
+   matched (`is_suspicious === true`) — a left accent border keeps it
+   readable against the tinted background instead of relying on color
+   alone (colorblind-safe, same reasoning as .log-lvl's dot+text pairing
+   above). The badge itself is solid (`--crit`, not `--crit-soft`) so it
+   stays visually distinct from the row's own soft tint underneath it. */
+.net-row-suspicious{background:var(--crit-soft); border-left:3px solid var(--crit);}
+.net-suspicious-badge{
+  display:inline-flex; align-items:center; gap:5px; white-space:nowrap;
+  font-size:10.5px; font-weight:700; color:#fff; background:var(--crit);
+  border-radius:20px; padding:3px 10px;
+}
+
+.con-actions{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:18px; max-width:var(--con-w);}
 /* A-12: инлайн-статус после «Создать копию»/«Восстановить» — тот же формат
    плашки, что .con-error, плюс success-вариант (--good-*). */
-.con-status{border-radius:8px; padding:9px 12px; font-size:12.5px; margin:-8px 0 18px;}
+.con-status{border-radius:8px; padding:9px 12px; font-size:12.5px; margin:-8px 0 18px; max-width:var(--con-w);}
 .con-status.success{background:var(--good-soft); color:var(--good-t);}
 .con-status.error{background:var(--crit-soft); color:var(--crit-t);}
+/* A-36: neutral "the user declined the OS admin prompt" outcome — NOT an
+   error (nothing broke), so it gets its own --warn-* colours rather than
+   reusing .error's --crit-* red (see app.js's handleFirewallRules/
+   handleBlockAllIncoming, kind 'warn' on `elevation_cancelled`). */
+.con-status.warn{background:var(--warn-soft); color:var(--warn-t);}
 .btn-accent{background:var(--accent); color:#fff; border:0; border-radius:8px; padding:8px 14px; font-weight:600; font-size:12.5px;}
 .btn-accent:hover{background:var(--accent-d);}
 .btn-accent:disabled{background:var(--surface3); color:var(--muted); cursor:not-allowed;}
@@ -161,15 +354,44 @@ button.sec-card:hover{border-color:var(--accent);}
 .btn-ghost:hover{border-color:var(--accent); color:var(--accent);}
 .btn-ghost:disabled{color:var(--muted); cursor:not-allowed; border-color:var(--line);}
 .btn-ghost:disabled:hover{border-color:var(--line); color:var(--muted);}
+/* A-36: "Заблокировать все входящие" — a wide-blast-radius, one-shot
+   elevated action (see os_firewall.py's block_all_incoming docstring) —
+   deliberately styled as alarming/red, distinct from every other
+   (safely-reversible) ghost-styled action button. */
+.btn-danger{background:var(--crit); color:#fff; border:0; border-radius:8px; padding:8px 14px; font-weight:600; font-size:12.5px;}
+.btn-danger:hover{background:var(--crit-t);}
+.btn-danger:disabled{background:var(--surface3); color:var(--muted); cursor:not-allowed;}
 
-.st-list{background:var(--surface); border:1px solid var(--line); border-radius:12px; overflow:hidden; max-width:640px;}
+.st-list{background:var(--surface); border:1px solid var(--line); border-radius:12px; overflow:hidden; max-width:var(--con-w);}
 .st-row{display:flex; align-items:center; justify-content:space-between; gap:14px; padding:12px 16px; border-bottom:1px solid var(--line);}
 .st-row:last-child{border-bottom:0;}
+/* Замечание пользователя (2026-08-02): необязательная кликабельность
+   строки настройки (app.js's settingMeta.onClick) — визуальная подсказка,
+   не скрытый клик. */
+.st-row-clickable{cursor:pointer;}
+.st-row-clickable:hover{background:var(--surface2);}
+.st-row-chevron{color:var(--muted); font-size:15px; margin-left:2px;}
 .st-row b{font-size:13px; font-weight:600;}
 .st-val{font-size:12.5px; color:var(--ink); font-weight:500; white-space:nowrap;}
+/* A-42: `.st-val` defaults to `nowrap` — correct for the short values every
+   OTHER setting has always had (booleans-as-text, "daily_06:00",
+   "30d_12m_3y"), but `ids`'s new `ban_policy` explanation is a full
+   sentence (server sends only the machine-readable code, e.g.
+   "per_scenario" — see app.js's CONSOLE_META.ids.settingLabels.ban_policy —
+   translated client-side into real RU/EN text) that silently clipped
+   against `.st-list`'s `overflow:hidden` otherwise. Applied only to that
+   one rendered value (renderConsole()'s settings loop), not to `.st-val`
+   itself, so every other console's short values keep their original
+   single-line layout unchanged. */
+.st-val-wrap{white-space:normal; text-align:right; max-width:360px; line-height:1.45;}
 .st-tgl{font-size:11px; font-weight:600; border-radius:20px; padding:3px 11px; background:var(--surface3); color:var(--muted); white-space:nowrap;}
 .st-tgl.on{background:var(--good-soft); color:var(--good-t);}
 .st-tgl.on::before,.st-tgl::before{content:""; display:inline-block; width:6px; height:6px; border-radius:50%; background:currentColor; margin-right:6px; vertical-align:middle; opacity:.7;}
+/* A-38: «Публичная» сеть — тот же warn-акцент, что и у .con-status.warn
+   (не тревожный красный: сеть сама по себе не проблема, это осознанный
+   более строгий профиль), просто другой визуальный вес, чем нейтральный
+   "выключено" .st-tgl без класса и зелёный «Доверенная» .st-tgl.on. */
+.st-tgl.warn{background:var(--warn-soft); color:var(--warn-t);}
 
 /* ---------- уведомления и каналы (A-13) ---------- */
 .pill.hp .badge-count{
@@ -177,7 +399,13 @@ button.sec-card:hover{border-color:var(--accent);}
   font-weight:700; min-width:15px; text-align:center; line-height:15px; display:inline-block;
 }
 .notif-block{margin-bottom:16px;}
-.notif-contacts{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;}
+/* Замечание пользователя (2026-07-31): та же «лесенка разной ширины»,
+   что уже чинилась для «Защиты периметра» — эта форма (IDS's «Белый
+   список», AV's «Проверить папку», уведомления → «Доверенные лица»)
+   единственная из всех общих блоков консоли не получила max-width:
+   var(--con-w) в прошлый раз (perimeter сама её не использует, поэтому
+   не попала в тот проход). */
+.notif-contacts{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; max-width:var(--con-w);}
 .notif-contacts input{
   flex:1; min-width:240px; border:1px solid var(--line); border-radius:8px; padding:9px 11px;
   font-size:12.5px; color:var(--ink); background:var(--surface2); font-family:inherit;
@@ -220,6 +448,72 @@ button.sec-card:hover{border-color:var(--accent);}
 #healthLogsList .logrow{padding:7px 14px;}
 #healthLogsList .logrow .msg{color:var(--ink); flex:1; min-width:180px; word-break:break-word;}
 #healthLogsList .logrow .lg{color:var(--muted); font-size:11px; flex-shrink:0;}
+
+/* ---------- A-37: клик по строке порта → модальное окно ---------- */
+/* `perimeter`'s ports table (A-31) rows are now clickable — same visual
+   affordance `button.sec-card:hover` already gives overview cards, applied
+   here to a `.con-row` instead since these rows are plain `<div>`s (see
+   app.js's renderConsoleList `perimeter` branch), not real `<button>`s (a
+   real button couldn't also render the free-form Порт/Процесс content the
+   generic `.con-row` layout already uses without extra restyling). */
+.con-row-clickable{cursor:pointer;}
+.con-row-clickable:hover{background:var(--surface2);}
+.con-row-clickable:focus-visible{outline:2px solid var(--accent); outline-offset:-2px;}
+/* A green/accent badge (not the red `--crit` `.net-suspicious-badge` A-40
+   already uses) — a blocked port is the DESIRED, protective outcome here,
+   not a threat indicator, so it deliberately reads as a different colour
+   language from A-40's "suspicious remote host" badge in the `network`
+   console, even though both are small pill badges on a list row. */
+.port-blocked-badge{
+  display:inline-flex; align-items:center; gap:5px; white-space:nowrap;
+  font-size:10.5px; font-weight:700; color:#fff; background:var(--accent);
+  border-radius:20px; padding:3px 10px; margin-left:auto;
+}
+
+/* A-37: модальное окно деталей порта — первый модальный компонент в этой
+   панели (до сих пор все подтверждения были нативным window.confirm(),
+   см. A-29/A-36), поэтому набор классов новый, не переиспользован из
+   другого места. */
+.modal-overlay{
+  position:fixed; inset:0; z-index:60; background:rgba(20,27,37,.45);
+  display:flex; align-items:center; justify-content:center; padding:20px;
+}
+.modal-card{
+  position:relative; width:100%; max-width:420px; background:var(--surface);
+  border:1px solid var(--line); border-radius:14px; padding:24px 22px;
+  box-shadow:0 30px 70px -30px rgba(20,27,37,.5);
+}
+.modal-close{
+  position:absolute; top:10px; right:10px; border:0; background:none;
+  color:var(--muted); font-size:20px; line-height:1; padding:6px; border-radius:8px;
+}
+.modal-close:hover{color:var(--ink); background:var(--surface2);}
+.modal-h{font-size:15px; font-weight:700; margin:0 26px 14px 0;}
+.modal-card .con-list{max-width:none; margin-bottom:14px;}
+.modal-card .con-status{margin:0 0 14px;}
+.modal-card .con-actions{margin-bottom:0;}
+
+/* A-43: «Показать/изменить пороги» — a wider modal card variant (each row
+   needs a scenario name+type plus two inputs plus its own Save button;
+   portModal's default 420px max-width above is too narrow for that) — an
+   additive class on the same `.modal-card`, not a new component. */
+.modal-card-wide{max-width:640px;}
+.scenario-threshold-row{flex-direction:column; align-items:flex-start; gap:8px;}
+.scenario-threshold-type{font-size:10.5px; font-weight:700; color:var(--muted); text-transform:uppercase; margin-left:2px;}
+.scenario-threshold-note{font-size:12.5px; color:var(--ink2); font-style:italic;}
+.scenario-threshold-form{display:flex; align-items:center; gap:10px; flex-wrap:wrap; width:100%;}
+.scenario-threshold-form label{display:flex; align-items:center; gap:6px; font-size:12px; color:var(--ink2);}
+/* Same "surface2 background, bordered, rounded" input language
+   .notif-contacts input already established (A-13) — reused here, not a
+   third input style invented for this one form. */
+.scenario-threshold-form input{
+  border:1px solid var(--line); border-radius:8px; padding:6px 9px; font-size:12.5px;
+  color:var(--ink); background:var(--surface2); font-family:inherit;
+}
+.scenario-threshold-form input:focus{outline:2px solid var(--accent); outline-offset:1px; background:var(--surface);}
+.scenario-cap-input{width:64px;}
+.scenario-leak-input{width:70px;}
+.scenario-threshold-status{width:100%; margin:0;}
 
 .fail-banner{
   display:flex; align-items:center; gap:12px; flex-wrap:wrap;

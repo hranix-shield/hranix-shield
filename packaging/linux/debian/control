@@ -20,3 +20,10 @@ Description: Hranix Shield — free open-source security panel (Phase 0)
  REAL host OS — a Docker deployment of the same panel can only ever see the
  Linux container it runs in, never the actual host, regardless of the
  host's own OS.
+ .
+ A-25: this package's postinst also installs and enrolls the official
+ Wazuh AGENT (GPLv2, from Wazuh's own apt repository — a separate systemd
+ service, never linked into this package's own AGPLv3+CLA code) against
+ the Wazuh Manager container above, so the "Журналы ОС" console's file-
+ integrity monitoring watches this host's real files instead of the
+ Manager container's own self-monitoring placeholder.

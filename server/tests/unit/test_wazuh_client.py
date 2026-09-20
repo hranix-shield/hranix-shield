@@ -189,6 +189,121 @@ async def test_aclose_closes_a_client_it_created_itself():
 
 
 @pytest.mark.unit
+async def test_get_agent_id_by_name_returns_the_matching_agents_id():
+    """A-25: packaging/*/wazuh_agent_setup.py's post-enrollment discovery
+    step — a freshly-enrolled agent authenticates with a deterministic
+    name it chose itself, but only the manager assigns the real numeric
+    id (Wazuh's own next-free-integer scheme)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/security/user/authenticate":
+            return httpx.Response(200, text="tok")
+        assert request.url.path == "/agents"
+        assert request.url.params.get("name") == "hranix-shield-mac1"
+        return httpx.Response(
+            200, json={"data": {"affected_items": [{"id": "003", "name": "hranix-shield-mac1"}]}}
+        )
+
+    client = _wazuh_client(handler)
+
+    agent_id = await client.get_agent_id_by_name("hranix-shield-mac1")
+
+    assert agent_id == "003"
+
+
+@pytest.mark.unit
+async def test_get_agent_id_by_name_returns_none_when_no_agent_matches():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/security/user/authenticate":
+            return httpx.Response(200, text="tok")
+        return httpx.Response(200, json={"data": {"affected_items": []}})
+
+    client = _wazuh_client(handler)
+
+    assert await client.get_agent_id_by_name("no-such-agent") is None
+
+
+@pytest.mark.unit
+async def test_trigger_syscheck_sends_put_syscheck_with_agents_list_query_param():
+    """A-30: live-verified against a real wazuh-manager:4.14.6 container
+    (see the A-30 task report) that the REAL request shape is `PUT
+    /syscheck?agents_list=<id>` — NOT the Wazuh REST API's own documented
+    `PUT /syscheck/{agent_id}` (that 405s against this exact deployed
+    version). This test pins the shape this connector actually sends."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/security/user/authenticate":
+            return httpx.Response(200, text="tok")
+        assert request.method == "PUT"
+        assert request.url.path == "/syscheck"
+        assert request.url.params.get("agents_list") == "003"
+        return httpx.Response(
+            200,
+            json={
+                "data": {"affected_items": ["003"], "total_affected_items": 1, "failed_items": []},
+                "message": "Syscheck scan was restarted on returned agents",
+                "error": 0,
+            },
+        )
+
+    client = _wazuh_client(handler, agent_id="003")
+
+    affected = await client.trigger_syscheck()
+
+    assert affected == ["003"]
+
+
+@pytest.mark.unit
+async def test_trigger_syscheck_raises_unauthorized_on_403():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/security/user/authenticate":
+            return httpx.Response(200, text="tok")
+        return httpx.Response(403, json={"title": "Permission Denied"})
+
+    client = _wazuh_client(handler)
+
+    with pytest.raises(WazuhError) as excinfo:
+        await client.trigger_syscheck()
+
+    assert excinfo.value.reason == "unauthorized"
+
+
+@pytest.mark.unit
+async def test_trigger_syscheck_raises_unreachable_on_unexpected_status():
+    """Pins the actual live finding: the documented `PUT /syscheck/{agent_id}`
+    shape 405s against this deployment — if this connector ever regresses
+    back to sending that shape, this test's generic "any non-200 that isn't
+    401/403 is `unreachable`" check would catch a live 405 the same way."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/security/user/authenticate":
+            return httpx.Response(200, text="tok")
+        return httpx.Response(405, json={"title": "Method Not Allowed"})
+
+    client = _wazuh_client(handler)
+
+    with pytest.raises(WazuhError) as excinfo:
+        await client.trigger_syscheck()
+
+    assert excinfo.value.reason == "unreachable"
+
+
+@pytest.mark.unit
+async def test_trigger_syscheck_raises_unreachable_on_connect_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/security/user/authenticate":
+            return httpx.Response(200, text="tok")
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = _wazuh_client(handler)
+
+    with pytest.raises(WazuhError) as excinfo:
+        await client.trigger_syscheck()
+
+    assert excinfo.value.reason == "unreachable"
+
+
+@pytest.mark.unit
 async def test_aclose_does_not_close_a_caller_supplied_client():
     external = _client_with_handler(lambda request: httpx.Response(200, text="tok"))
     client = WazuhClient(api_url="http://wazuh.test", username="u", password="p", client=external)

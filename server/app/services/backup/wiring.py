@@ -12,6 +12,7 @@ and only place A-12 reads `get_settings()` for backup purposes.
 from __future__ import annotations
 
 import logging
+import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -20,8 +21,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db.models import BackupJob
+from app.services.backup import service as backup_service
 from app.services.backup.integrity import check_integrity
-from app.services.backup.restic_client import ResticError, list_snapshots
+from app.services.backup.restic_client import ResticError, _resolve_restic, list_snapshots
 from app.services.backup.scheduler import BackupScheduler, next_daily_run
 from app.services.backup.service import resolve_backup_password_file, run_backup, run_restore
 from app.services.event_bus import EventBus
@@ -183,6 +185,80 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def backup_connector_status(*, settings: Settings | None = None) -> dict:
+    """A-55: cheap, honest configuration status of the restic backup
+    connector — the same machine-readable `{"status", "reason"}` vocabulary
+    every other console connector already speaks (see e.g.
+    `fetch_logs_console_data`'s `connector.status`), translated to user text
+    ONLY on the client (§0.2 / CLAUDE.md "ЛОКАЛИЗАЦИЯ"). Exists because the
+    console used to render an all-clear «OK / Хранилищ: 1» on a machine
+    without restic at all, while the "Create full backup" click honestly
+    failed (GUI-прогон 2026-09-19, находка F1) — a lying OK is worse than a
+    visible, actionable not_configured.
+
+    Deliberately WITHOUT subprocess and WITHOUT side effects — this runs on
+    every `/security/consoles/backup` poll, so:
+      - the binary check goes through the SAME `_resolve_restic()` resolver
+        `_run_restic()` itself uses (патч приёмки A-61: packaged-сборка
+        вендорит restic в бандл — снапшоты работали, а прежняя проверка
+        чистым `shutil.which("restic")` рапортовала `restic_binary_not_found`,
+        и UI прятал кнопки). Vendored-ветка резолвера сама проверила файл
+        `is_file()`, поэтому её абсолютный путь = «запускаемый бинарь есть»;
+        bare-фолбэк `"restic"` по-прежнему честно резолвится через
+        `shutil.which` — никогда `restic version`;
+      - the password check only READS: `settings.restic_password` set, or the
+        persisted password file already exists and is non-empty. It must NOT
+        call `resolve_backup_password_file()` itself — that function's
+        contract is to CREATE the file (generating a random password) when
+        missing, which would turn a passive status poll into a disk write
+        and would report `restic_password_missing` never. "Configured" here
+        means the OPERATOR provided a password (env or pre-existing file);
+        auto-generation on first backup stays an implementation fallback,
+        not a configured state — a fresh install honestly reads
+        `restic_password_missing` until the operator picks a password.
+      - `repo_ready` is "the repository directory exists on disk"
+        (`resolved_backup_dir`); `init_repo()` creates it on the first
+        successful backup, so its absence means no repository has ever been
+        initialized here. This is a configuration check, not a reachability
+        probe — a real `restic check` needs a subprocess and the password.
+
+    The first failing step in the chain (`backup_enabled` → binary →
+    password → repository) wins as `reason`; all four are distinct,
+    operator-actionable codes (`backups_disabled`,
+    `restic_binary_not_found`, `restic_password_missing`,
+    `restic_repo_missing`), never a generic "something is off".
+    """
+    settings = settings or get_settings()
+    resolved_restic = _resolve_restic()
+    restic_binary = (
+        Path(resolved_restic).is_absolute()
+        or shutil.which(resolved_restic) is not None
+    )
+    repo_ready = settings.resolved_backup_dir.is_dir()
+    password_file = backup_service.RESTIC_PASSWORD_FILE  # module attr at CALL time (test-isolation)
+    password_ready = bool(settings.restic_password) or (
+        password_file.exists() and bool(password_file.read_text().strip())
+    )
+
+    if not settings.backup_enabled:
+        reason = "backups_disabled"
+    elif not restic_binary:
+        reason = "restic_binary_not_found"
+    elif not password_ready:
+        reason = "restic_password_missing"
+    elif not repo_ready:
+        reason = "restic_repo_missing"
+    else:
+        reason = None
+
+    return {
+        "status": "ok" if reason is None else "not_configured",
+        "reason": reason,
+        "restic_binary": restic_binary,
+        "repo_ready": repo_ready,
+    }
+
+
 async def backup_console_metrics(
     session: AsyncSession, *, settings: Settings | None = None
 ) -> dict:
@@ -190,8 +266,8 @@ async def backup_console_metrics(
     routers/security_console.py._backup_payload): the latest job's
     status/time, the total size of every successful run recorded, the next
     automatic run (None when `backup_enabled` is off — nothing IS
-    scheduled), a genuine last-7-days size chart, and the one real module's
-    (`database`) last backup time.
+    scheduled), a genuine last-7-days size chart, the one real module's
+    (`database`) last backup time, and A-55's honest `connector` status.
 
     Every value here comes from an actual `BackupJob` query — an empty
     table (no snapshot has ever run) legitimately produces all-None/all-zero
@@ -229,14 +305,19 @@ async def backup_console_metrics(
         )
     ).first()
 
+    connector = backup_connector_status(settings=settings)
+
     return {
         "last_backup_at": latest_job.finished_at.isoformat() if latest_job and latest_job.finished_at else None,
         "last_backup_status": latest_job.status if latest_job else None,
         "total_size_bytes": total_size_bytes,
-        # Exactly one real storage target in Phase 0: the local restic repo.
-        # §7.1 of the plan wants >=2 (local + NAS/external) eventually — not
-        # yet built, so this stays honestly 1, not a placeholder guess.
-        "storages": 1,
+        # A-55: honest count of REACHABLE storage targets. Exactly one real
+        # target exists in Phase 0 (the local restic repo, §7.1 of the plan
+        # wants >=2 eventually — not built), so it is 1 only when the
+        # connector itself is genuinely configured, and 0 (never a
+        # fabricated 1) on a machine where that one target is missing —
+        # this was hardcoded to 1 before A-55 (GUI-прогон находка F1).
+        "storages": 1 if connector["status"] == "ok" else 0,
         "next_scheduled_at": next_scheduled_at.isoformat() if next_scheduled_at else None,
         "chart_values": chart_values,
         "database_last_backup_at": (
@@ -244,6 +325,7 @@ async def backup_console_metrics(
             if database_job and database_job.finished_at
             else None
         ),
+        "connector": connector,
     }
 
 

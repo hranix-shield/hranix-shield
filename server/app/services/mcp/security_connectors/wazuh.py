@@ -140,6 +140,18 @@ class WazuhError(RuntimeError):
         self.reason = reason
 
 
+class WazuhNotConfiguredError(RuntimeError):
+    """Raised by `trigger_syscheck_scan()` (A-30) when Wazuh is not
+    configured at all — same "distinguish 'never turned on' from a live
+    connector error" shape as `ClamAvNotConfiguredError`. `fetch_logs_console_data`
+    (the read path) never needs this: it just returns an honest
+    `"not_configured"` placeholder. This is only needed for the write/action
+    path (`trigger_syscheck_scan`), which — like `clamav.py`'s
+    `run_quick_scan`/`start_full_scan` — must let the router tell "nothing to
+    do" apart from "tried and failed" via a raised exception, since an
+    action endpoint has no "placeholder payload" shape to fall back to."""
+
+
 class WazuhClient:
     """Thin async HTTP client over one Wazuh Manager's REST API. No Wazuh
     code runs in this process — see this module's docstring.
@@ -247,6 +259,77 @@ class WazuhClient:
         )
         return payload.get("data", {}).get("affected_items", [])
 
+    async def trigger_syscheck(self) -> list[str]:
+        """On-demand FIM rescan for this deployment's configured agent (A-30's
+        "запустить FIM-скан" action).
+
+        **Live-verified against a real `wazuh/wazuh-manager:4.14.6`
+        container before this was written** (see the A-30 task report for
+        the full transcript) — and it is NOT what the Wazuh REST API's own
+        reference docs describe. The documented shape is `PUT
+        /syscheck/{agent_id}` (agent id as a *path* parameter); that call
+        returns a plain HTTP 405 against this exact deployed version
+        (confirmed live, both for agent `"000"` and a real enrolled agent).
+        The manager's OWN `GET /openapi.json` (served live by the same
+        container) tells the true story: the actual endpoint is `PUT
+        /syscheck` — no agent id in the path at all — with `agents_list` as
+        a *query* parameter instead, confirmed live to return HTTP 200
+        (`{"data": {"affected_items": ["<agent_id>"], ...}, "message":
+        "Syscheck scan was restarted on returned agents"}`). This method
+        implements the confirmed-real shape, not the documented one — same
+        "verify against the live thing, not the docs" discipline this
+        project has applied to every other connector.
+
+        Returns `data.affected_items` — the agent ids the manager actually
+        restarted a scan for (normally exactly `[self._agent_id]`; an empty
+        list would mean this deployment's configured agent id is unknown to
+        the manager, surfaced as-is rather than guessed at)."""
+        token = await self._authenticate()
+        try:
+            response = await self._client.put(
+                "/syscheck",
+                params={"agents_list": self._agent_id},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        except httpx.HTTPError as exc:
+            raise WazuhError(f"Wazuh Manager API unreachable: {exc}", reason="unreachable") from exc
+
+        if response.status_code in (401, 403):
+            raise WazuhError(
+                f"Wazuh Manager API rejected the request (HTTP {response.status_code})",
+                reason="unauthorized",
+            )
+        if response.status_code != 200:
+            raise WazuhError(
+                f"Wazuh Manager API returned HTTP {response.status_code} triggering a syscheck scan",
+                reason="unreachable",
+            )
+        payload = response.json()
+        return payload.get("data", {}).get("affected_items", [])
+
+    async def get_agent_id_by_name(self, name: str) -> str | None:
+        """`GET /agents?name=<name>` -> that agent's numeric `id`, or
+        `None` if no agent with this exact name is registered on this
+        manager (yet).
+
+        Added for A-25 (native OS Wazuh agents, see
+        docs/план-спецификация-фаза-0-контур-безопасности-100-2026-07-18.md):
+        a freshly-enrolled native install authenticates to `authd` with a
+        deterministic agent name it chose itself (see
+        `packaging/*/wazuh_agent_setup.py`), but only the manager assigns
+        the actual numeric id (Wazuh's own next-free-integer scheme, see
+        this module's docstring on agent `"000"`) — this lets that
+        one-time enrollment step discover its own real id and persist it
+        as `Settings.wazuh_agent_id` (`WAZUH_AGENT_ID` in `config.env`)
+        automatically, rather than requiring an operator to read it off
+        `GET /agents` by hand. Not used anywhere in this connector's own
+        steady-state path (`fetch_logs_console_data` already knows its
+        configured `agent_id` up front) — purely a one-time,
+        enrollment-time discovery helper."""
+        payload = await self._get("/agents", params={"name": name})
+        items = payload.get("data", {}).get("affected_items", [])
+        return items[0].get("id") if items else None
+
 
 def create_wazuh_client(settings: Settings | None = None) -> WazuhClient | None:
     """A `WazuhClient` wired to real Settings, or `None` when
@@ -299,7 +382,14 @@ def _placeholder_logs_data(connector_status: str) -> dict[str, Any]:
     right now. `metrics` are all `None` (never a fabricated `0` — the
     console's OWN pre-A-16 stub used to hardcode zeros here, which is
     exactly the "false all-clear" shape A-11's task brief already flagged
-    as unacceptable for `ids`; A-16 fixes that same bug for `logs`)."""
+    as unacceptable for `ids`; A-16 fixes that same bug for `logs`).
+
+    A-26: no `chart` key here anymore — same reasoning as
+    crowdsec._placeholder_ids_data: this connector has no DB session to
+    query real history from, and the field used to be a hardcoded `[]`.
+    `routers/security_console.py`'s `_logs_payload` now builds its own
+    `chart` from `services/metrics/chart.chart_values_7d()`.
+    """
     return {
         "connector": {"status": connector_status},
         "metrics": {
@@ -308,7 +398,6 @@ def _placeholder_logs_data(connector_status: str) -> dict[str, Any]:
             "security_errors_24h": None,
             "sources": None,
         },
-        "chart": {"metric": "security_events_7d", "unit": "events", "values": []},
         "entries": [],
     }
 
@@ -364,9 +453,29 @@ async def fetch_logs_console_data(settings: Settings | None = None) -> dict[str,
             # not implemented yet).
             "sources": 1,
         },
-        "chart": {"metric": "security_events_7d", "unit": "events", "values": []},
         "entries": [_finding_to_entry(finding) for finding in findings[:_ENTRIES_LIMIT]],
     }
+
+
+async def trigger_syscheck_scan(settings: Settings | None = None) -> list[str]:
+    """A-30: entry point the router's `/consoles/logs/wazuh/syscheck` action
+    endpoint calls — runs an on-demand FIM rescan (see
+    `WazuhClient.trigger_syscheck` for the live-verified real request shape).
+
+    Raises `WazuhNotConfiguredError` when Wazuh is not configured at all, or
+    `WazuhError` (see that class's `reason`) when configured but the manager
+    rejected/was unreachable — the router maps both to an honest HTTP
+    503/4xx with a machine-readable error code, same convention as
+    `clamav.py`'s `run_quick_scan`/`start_full_scan`.
+    """
+    settings = settings or get_settings()
+    client = create_wazuh_client(settings)
+    if client is None:
+        raise WazuhNotConfiguredError("Wazuh is not configured")
+    try:
+        return await client.trigger_syscheck()
+    finally:
+        await client.aclose()
 
 
 def register_wazuh_connector(registry: MCPRegistry, *, settings: Settings | None = None) -> None:

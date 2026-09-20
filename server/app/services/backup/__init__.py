@@ -20,6 +20,7 @@ from app.services.backup.service import (
     run_restore,
 )
 from app.services.backup.wiring import (
+    backup_connector_status,
     backup_console_metrics,
     create_default_scheduler,
     run_manual_backup,
@@ -31,6 +32,7 @@ __all__ = [
     "BACKUP_MODULE_ID",
     "BackupScheduler",
     "ResticError",
+    "backup_connector_status",
     "backup_console_metrics",
     "check_integrity",
     "create_default_scheduler",

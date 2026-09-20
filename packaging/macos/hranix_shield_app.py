@@ -46,11 +46,31 @@ if not getattr(sys, "frozen", False):
         sys.path.insert(0, str(_SERVER_DIR))
 
 from launcher import LauncherHandle, launch  # noqa: E402 (see sys.path adjustment above)
+from wazuh_agent_setup import maybe_setup_wazuh_agent  # noqa: E402 (see sys.path adjustment above)
 
 logger = logging.getLogger(__name__)
 
 _OPEN_PANEL = "Открыть панель"
 _QUIT = "Выход"
+
+
+def _prompt_wazuh_agent_install(title: str, message: str) -> bool:
+    """`wazuh_agent_setup.maybe_setup_wazuh_agent`'s `prompt` callback
+    (A-25) — a plain `rumps.alert` Yes/No, called synchronously on the
+    main thread (see `main()` below) before `app.run()` hands the main
+    thread to Cocoa's event loop. `rumps.alert` returns `1` for the "ok"
+    button, `0` for "cancel" (see rumps' own `alert()` docstring)."""
+    return rumps.alert(title, message, ok="Установить", cancel="Позже") == 1
+
+
+def _notify_wazuh_agent_result(title: str, message: str) -> None:
+    """`maybe_setup_wazuh_agent`'s `notify` callback — a macOS
+    notification-center banner (not another blocking `rumps.alert`: this
+    fires from `_install_worker`'s BACKGROUND thread, after the slow
+    download+elevated-install steps, and a modal alert from a non-main
+    thread is not a safe Cocoa UI call the way `rumps.notification`'s
+    Notification Center API is)."""
+    rumps.notification(title, "", message)
 
 
 class HranixShieldMenuBarApp(rumps.App):
@@ -105,6 +125,15 @@ def main() -> None:
             "'%s' may show an error the first time it's clicked",
             _OPEN_PANEL,
         )
+    # A-25: first-run-only check (see wazuh_agent_setup.py's module
+    # docstring for the (а)/(б) decision) — synchronous here only for the
+    # fast "already handled?" checks and the consent dialog itself (which
+    # is SUPPOSED to block until answered, like any first-run consent
+    # prompt); the actual download+elevated-install runs on its own
+    # background thread (started inside maybe_setup_wazuh_agent), so a
+    # slow network or a pending admin-password dialog never delays the
+    # menu-bar icon from appearing or freezes rumps' own event loop below.
+    maybe_setup_wazuh_agent(prompt=_prompt_wazuh_agent_install, notify=_notify_wazuh_agent_result)
     app.run()
 
 

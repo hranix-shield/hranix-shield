@@ -59,6 +59,94 @@ case "$1" in
     else
         systemctl enable --now hranix-shield.service
     fi
+
+    # A-25: install+enroll the official Wazuh agent (GPLv2, an external OS
+    # service — never linked into this package's own AGPLv3+CLA Python
+    # code, same licence-gate shape CLAUDE.md already applies to the
+    # Wazuh MANAGER's own separate Docker container) so "Журналы ОС" gets
+    # real FIM data for THIS host, not the "manager watches itself"
+    # placeholder A-16 shipped with (see
+    # docs/план-спецификация-фаза-0-контур-безопасности-100-2026-07-18.md's
+    # "A-25" section). NOT declared in debian/control's `Depends:` on
+    # purpose: a hard apt dependency would require the Wazuh apt repo
+    # already configured on the target machine BEFORE `apt install
+    # ./hranix-shield_*.deb` even runs, which cannot be assumed on a
+    # clean machine — so the repo is added here instead, the same
+    # "self-contained install" reasoning `apt-transport-https`/`curl`
+    # below exist for.
+    #
+    # Best-effort, not fatal: wrapped in a subshell with its own `set -e`
+    # (stops early within the block on any failure) + `|| echo ...`
+    # around the WHOLE thing (a failure here does NOT abort hranix-
+    # shield's own install/upgrade) — an offline machine or a transient
+    # network hiccup must not brick the base product over an optional
+    # companion, matching the "external security tool absent -> an
+    # honest not_configured, never a crash" philosophy already used by
+    # every services/mcp/security_connectors/*.py connector, just applied
+    # at package-install time instead of at an HTTP call.
+    #
+    # HRANIX_SKIP_WAZUH_AGENT=1 is a plain escape hatch for an operator
+    # who does not want this system-wide daemon installed at all (this
+    # package ships no debconf questions yet — adding a whole debconf
+    # flow was out of this task's scope, see the A-25 task brief).
+    #
+    # Coordination note (A-25 task brief): A-24 (osquery, a parallel
+    # task) may ALSO touch this same file to add its own apt repo/postinst
+    # step — if merging the two produces a conflict here, that is expected
+    # and resolved by the architect, not by this script trying to guess
+    # at A-24's own shape.
+    if [ "${HRANIX_SKIP_WAZUH_AGENT:-0}" != "1" ]; then
+      (
+        set -e
+        if [ ! -x /var/ossec/bin/wazuh-control ]; then
+            echo "hranix-shield: installing the official Wazuh agent (A-25) ..."
+            apt-get install -y gnupg apt-transport-https ca-certificates curl
+            curl -s https://packages.wazuh.com/key/GPG-KEY-WAZUH \
+                | gpg --no-default-keyring --keyring gnupg-ring:/usr/share/keyrings/wazuh.gpg --import
+            chmod 644 /usr/share/keyrings/wazuh.gpg
+            echo "deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main" \
+                > /etc/apt/sources.list.d/wazuh.list
+            apt-get update
+            # WAZUH_MANAGER (env var, consumed by the official .deb's own
+            # postinst — see documentation.wazuh.com's Linux agent guide)
+            # defaults to 127.0.0.1: this native install's own docker
+            # companions (infra/security/wazuh/docker-compose.yml,
+            # A-25's Decision #3) are published on 127.0.0.1 too, same
+            # convention already documented in packaging/macos/README.md.
+            # HRANIX_WAZUH_MANAGER overrides this for an operator pointing
+            # at a remote/pre-existing manager instead.
+            WAZUH_MANAGER="${HRANIX_WAZUH_MANAGER:-127.0.0.1}" \
+            WAZUH_AGENT_NAME="hranix-shield-$(hostname)" \
+                apt-get install -y wazuh-agent
+        else
+            echo "hranix-shield: Wazuh agent already present, skipping install (A-25)"
+        fi
+
+        # Point THIS agent's own local FIM config at the real platformdirs
+        # data/log directories the native `hranix-shield` service itself
+        # writes to (see server/app/config.py's A-19
+        # _packaged_data_dir()/_packaged_log_dir() and this package's own
+        # `Environment=HOME=/var/lib/hranix-shield`, hranix-shield.service)
+        # — NOT the stock /etc,/usr/bin,... paths the vendor package
+        # ships by default, and NOT the Docker-only /monitored/* paths
+        # from A-16/Decision #2 (this is a different config file:
+        # /var/ossec/etc/ossec.conf is the AGENT's own, not the manager's
+        # — see this task's own brief for why those two must not be
+        # confused). Idempotent: only edits the file the first time
+        # (checked via the directory string already being present).
+        WAZUH_CONF=/var/ossec/etc/ossec.conf
+        HRANIX_DATA_DIR="$HRANIX_HOME/.local/share/Hranix Shield"
+        HRANIX_LOG_DIR="$HRANIX_HOME/.local/state/Hranix Shield/log"
+        if [ -f "$WAZUH_CONF" ] && ! grep -qF "$HRANIX_DATA_DIR" "$WAZUH_CONF"; then
+            sed -i "s#</syscheck>#    <directories realtime=\"yes\" report_changes=\"yes\" check_all=\"yes\">${HRANIX_DATA_DIR}</directories>\n    <directories realtime=\"yes\" report_changes=\"yes\" check_all=\"yes\">${HRANIX_LOG_DIR}</directories>\n  </syscheck>#" "$WAZUH_CONF"
+        fi
+
+        systemctl daemon-reload
+        if systemctl list-unit-files wazuh-agent.service >/dev/null 2>&1; then
+            systemctl enable --now wazuh-agent
+        fi
+      ) || echo "hranix-shield: WARNING - Wazuh agent install/enrollment failed or was skipped (offline machine? see A-25) - hranix-shield itself is unaffected; 'Журналы ОС' will show not_configured/stale data for this host until this is resolved manually (re-run: apt-get install wazuh-agent)"
+    fi
     ;;
 
   abort-upgrade|abort-remove|abort-deconfigure)

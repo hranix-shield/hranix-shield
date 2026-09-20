@@ -30,6 +30,25 @@
 #   docker compose -f infra/security/crowdsec/docker-compose.yml exec crowdsec \
 #     cscli bouncers add hranix-shield-bouncer -o raw
 #
+# A-29: a SECOND, separate credential — machine-level LAPI auth — is
+# required for "Забанить вручную"/"Разбанить IP" on the "Обнаружение
+# вторжений" console to actually work. The bouncer key above is read-only
+# BY CROWDSEC'S OWN DESIGN: confirmed live that it gets a hard HTTP 401 from
+# `POST /v1/alerts`/`DELETE /v1/decisions/{id}` — this is not a limitation
+# of this project's code, see server/app/services/mcp/security_connectors/
+# crowdsec.py's "A-29 addendum" docstring section for the exact live tests
+# performed. Provision it the same way as the bouncer key above, then copy
+# the id/password into .env as CROWDSEC_MACHINE_ID/CROWDSEC_MACHINE_PASSWORD
+# (see infra/security/crowdsec/README.md for the full walkthrough,
+# including why the password must be generated, never typed as a fixed
+# string — same discipline as JWT_SECRET/RESTIC_PASSWORD, A-19):
+#
+#   MACHINE_PASSWORD=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+#   docker compose -f infra/security/crowdsec/docker-compose.yml exec crowdsec \
+#     cscli machines add hranix-shield-machine --password "$MACHINE_PASSWORD" -f -
+#   echo "CROWDSEC_MACHINE_ID=hranix-shield-machine"
+#   echo "CROWDSEC_MACHINE_PASSWORD=$MACHINE_PASSWORD"
+#
 # To tear down (keeps the named volume, so `up -d` again resumes the same
 # CrowdSec DB/bouncer list):
 #

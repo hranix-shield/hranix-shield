@@ -39,10 +39,21 @@ os.environ.setdefault("JWT_SECRET", "test-suite-fixed-secret-do-not-use-outside-
 os.environ.setdefault("CROWDSEC_API_KEY", "")
 os.environ.setdefault("CLAMAV_ENABLED", "False")
 os.environ.setdefault("WAZUH_API_PASSWORD", "")
+# A-60: the same reasoning, one generation later — the stack bootstrap
+# (services/stack/bootstrap.py) legitimately writes CROWDSEC_MACHINE_ID/
+# CROWDSEC_MACHINE_PASSWORD/WAZUH_API_URL into the real deployment .env once
+# the operator runs it, and every "not_configured by default" CrowdSec test
+# (ban/unban, ids console, A-11 regression) would then see a configured
+# machine credential and fail — the same shared-mutable-.env leak the three
+# pins above already document. Pinned the same way, once.
+os.environ.setdefault("CROWDSEC_MACHINE_ID", "")
+os.environ.setdefault("CROWDSEC_MACHINE_PASSWORD", "")
+os.environ.setdefault("WAZUH_API_URL", "")
 
 import app.services.backup.service as backup_service_module  # noqa: E402
 import app.services.event_bus as event_bus_module  # noqa: E402
 import app.services.health.checks as health_checks_module  # noqa: E402
+import app.services.mcp.security_connectors.clamav as clamav_module  # noqa: E402
 import app.services.notifications.service as notifications_service_module  # noqa: E402
 from app.app_factory import create_app  # noqa: E402
 from app.db.session import get_session  # noqa: E402
@@ -132,10 +143,19 @@ def client(
     passing while quietly attempting real writes; caught via
     logs/assistant.log before the live DoD run, same class of bug as A-12's
     restic-password-file leak this file already documents above).
+
+    `app.services.mcp.security_connectors.clamav.async_session_maker` is
+    redirected the same way (A-33): `start_full_scan`'s background job
+    (`_run_full_scan_job`) opens its own session via that module-level name
+    to record a `scan_history` row on completion, independent of the
+    `get_session` FastAPI dependency override above — without this, a test
+    that let a real full scan job actually complete would write into the
+    real data/assistant.db instead of this isolated one.
     """
     monkeypatch.setattr(event_bus_module, "async_session_maker", migrated_session_maker)
     monkeypatch.setattr(health_checks_module, "async_session_maker", migrated_session_maker)
     monkeypatch.setattr(notifications_service_module, "async_session_maker", migrated_session_maker)
+    monkeypatch.setattr(clamav_module, "async_session_maker", migrated_session_maker)
 
     app = create_app()
 

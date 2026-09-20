@@ -5,11 +5,21 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hranix Shield</title>
 <link rel="stylesheet" href="assets/styles.css">
+<!-- A-48: применяет сохранённую/системную тему СИНХРОННО, до отрисовки
+     <body> — app.js подключён в конце body (см. его собственную
+     applyTheme()/DOMContentLoaded), ждать его выполнения означало бы
+     короткую вспышку светлой темы при заходе с уже выбранной тёмной. -->
+<script>(function(){
+  var t = localStorage.getItem('hranix-theme');
+  if(!t) t = (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+  document.documentElement.classList.toggle('dark', t === 'dark');
+})();</script>
 </head>
 <body>
 
 <!-- ЭКРАН ВХОДА -->
 <div class="login-screen" id="loginScreen">
+  <button class="lang-tgl" id="themeTglLogin" onclick="toggleTheme()">🌙</button>
   <button class="lang-tgl" id="langTglLogin" onclick="toggleLang()">EN</button>
   <div class="login-card">
     <div class="login-brand">🛡️ <span>Hranix Shield</span></div>
@@ -48,6 +58,7 @@
       <i></i><span id="notificationsPillText">🔔 …</span>
     </button>
     <div class="topbar-sp"></div>
+    <button class="chip-btn" id="themeBtn" onclick="toggleTheme()">🌙</button>
     <button class="chip-btn" id="langBtn" onclick="toggleLang()">EN</button>
     <button class="chip-btn" id="logoutBtn" onclick="handleLogout()" data-ru="Выйти" data-en="Sign out">Выйти</button>
   </header>
@@ -73,6 +84,19 @@
 
       <div class="sec-cards" id="secCards"></div>
 
+      <!-- A-60: вход в «Настройки → Стек защиты» — bootstrap стека
+           (CrowdSec/ClamAV/Wazuh) из приложения. Сам раздел — отдельный
+           экран #view-stack ниже; здесь только строка входа, чтобы статус
+           стека был виден с обзорной без лишнего клика. -->
+      <div class="con-sh" data-ru="Настройки" data-en="Settings">Настройки</div>
+      <div class="st-list">
+        <div class="st-row">
+          <b data-ru="Стек защиты (CrowdSec · ClamAV · Wazuh)" data-en="Security stack (CrowdSec · ClamAV · Wazuh)">Стек защиты (CrowdSec · ClamAV · Wazuh)</b>
+          <button class="btn-ghost" id="stackOpenBtn" onclick="openStackScreen()"
+            data-ru="Открыть" data-en="Open">Открыть</button>
+        </div>
+      </div>
+
       <div class="sec-log">
         <div class="panel-h" data-ru="Журнал событий безопасности" data-en="Security event log">Журнал событий безопасности</div>
         <div id="eventLogList">
@@ -93,23 +117,200 @@
 
       <div class="con-error" id="conError" hidden></div>
 
-      <div class="con-sh" data-ru="Параметры состояния" data-en="Status metrics">Параметры состояния</div>
+      <!-- Замечание пользователя (2026-07-31): заголовок теперь может быть
+           переопределён консолью (см. CONSOLE_META.<id>.metricsSectionTitle
+           в app.js's renderConsole) — по умолчанию для консолей без своего
+           заголовка остаётся этот текст ("Параметры состояния"). -->
+      <div class="con-sh" id="conMetricsTitle" data-ru="Параметры состояния" data-en="Status metrics">Параметры состояния</div>
       <div class="kb-stats" id="conMetrics"></div>
+
+      <!-- Замечание пользователя (2026-07-23): кнопки управления (включая
+           красную «Заблокировать все входящие», которую в экстренной
+           ситуации нужно нажать быстро) были в самом низу страницы, под
+           длинным списком портов — перенесены наверх, сразу под метриками,
+           до графика/карты/списков. Один и тот же #conActions для всех
+           консолей (см. app.js's renderConsole()) — перемещение этого
+           единственного блока в разметке поднимает кнопки управления для
+           ВСЕХ консолей, не только периметра, тем же самым «выше» смыслом
+           запроса. -->
+      <!-- A-54: hidden whenever the current console's meta.actions is empty
+           (currently only `network` — see app.js's renderConsole/
+           CONSOLE_META.network's own A-54 comments for why). -->
+      <div class="con-sh" id="conActionsHeading" data-ru="Управление" data-en="Actions">Управление</div>
+      <div class="con-actions" id="conActions"></div>
+      <div class="con-status" id="conActionStatus" hidden></div>
 
       <div class="chart-card" id="conChartCard" hidden>
         <div class="chart-cardh" id="conChartTitle"></div>
-        <div class="chart-empty" data-ru="Нет данных для графика — появятся после интеграции инструментов (A-11)"
-          data-en="No chart data yet — arrives once the security tools are integrated (A-11)">Нет данных для графика</div>
+        <!-- A-26: two HONESTLY different states, never conflated (see
+             app.js's renderConsoleChart) — "недостаточно истории"
+             (metric_samples hasn't accumulated enough real days yet, e.g.
+             a fresh install or a tool only just configured) shows here;
+             once services/metrics/chart.chart_values_7d() returns real
+             values, #conChartCanvas is drawn instead and this stays
+             hidden. Neither one is the old "chart rendering not
+             implemented" placeholder this replaces — rendering IS
+             implemented now, see drawBarChart() below. -->
+        <div class="chart-empty" id="conChartEmpty"
+          data-ru="Недостаточно истории ещё — данные появятся по мере накопления (обычно за несколько дней)"
+          data-en="Not enough history yet — data will appear as it accumulates (usually within a few days)">Недостаточно истории ещё</div>
+        <!-- Замечание пользователя (2026-07-31): только для «Защиты
+             периметра» — график теперь два столбика в день (местные баны/
+             мировой community-список CrowdSec), см. app.js's
+             renderConsoleChart/drawGroupedBarChart. Для всех остальных
+             консолей (один ряд значений) остаётся hidden. -->
+        <div class="chart-legend" id="conChartLegend" hidden>
+          <span class="chart-legend-item"><i class="chart-legend-dot chart-legend-dot-a"></i><span id="conChartLegendA"></span></span>
+          <span class="chart-legend-item"><i class="chart-legend-dot chart-legend-dot-b"></i><span id="conChartLegendB"></span></span>
+        </div>
+        <canvas class="chart-canvas" id="conChartCanvas" hidden></canvas>
+      </div>
+
+      <!-- A-41: «Карта соединений» — обзорная визуализация текущих
+           соединений консоли `network` ПО СТРАНАМ, чисто на <canvas> без
+           каких-либо картографических библиотек и БЕЗ единого запроса к
+           внешнему тайл-серверу (Leaflet/OSM/Google Maps и т.п. — см.
+           app.js's drawConnectionsMap docstring и
+           docs/план-спецификация-фаза-0-карта-соединений-2026-07-23.md's
+           «Важное архитектурное решение»: это вопрос приватности продукта,
+           не эстетики). Тот же карточный паттерн (.chart-card), что уже
+           есть у 7-дневного графика выше — не отдельная новая абстракция.
+           Показывается только для network, см. app.js's renderConsole().
+           Canvas НИКОГДА не hidden (в отличие от conChartCanvas выше) —
+           сетка+«локальный узел» рисуются всегда, честная деградация при
+           не настроенном GeoIP — через conMapNote, не через пустой холст. -->
+      <div class="chart-card" id="conMapCard" hidden>
+        <div class="chart-cardh" data-ru="Карта соединений" data-en="Connections map">Карта соединений</div>
+        <div class="con-hint" id="conMapNote" hidden></div>
+        <canvas class="chart-canvas map-canvas" id="conMapCanvas"
+          onmousemove="handleConMapMouseMove(event)" onmouseleave="handleConMapMouseLeave()"></canvas>
       </div>
 
       <div id="conListSection" hidden>
-        <div class="con-sh" id="conListTitle"></div>
+        <!-- A-54: «Экспорт журнала» перенесена сюда, к заголовку списка
+             соединений — раньше жила в общем блоке «Управление» вместе с
+             двумя нерабочими заглушками («Разорвать соединение»/
+             «Блокировать процесс», убраны совсем — их реальные аналоги
+             теперь в модалке соединения, A-52/A-53). Кнопка видна только
+             для `network` (см. app.js's renderConsole, `#conListExportBtn`)
+             — `logs` по-прежнему экспортирует через общий механизм ниже,
+             у неё остаются два других реальных действия. -->
+        <div class="con-list-header">
+          <div class="con-sh" id="conListTitle"></div>
+          <button class="con-list-export-btn" type="button" id="conListExportBtn"
+            onclick="handleExportLog(this, 'conListExportStatus')" hidden
+            data-ru="⬇ Экспорт журнала" data-en="⬇ Export log">⬇ Экспорт журнала</button>
+        </div>
+        <div class="con-status" id="conListExportStatus" hidden></div>
+        <!-- A-35: короткий поясняющий текст над списком — заполняется
+             только когда у консоли есть CONSOLE_META.<id>.listHint (сейчас
+             только «Журналы ОС», см. app.js's renderConsole); для остальных
+             консолей блок остаётся hidden. -->
+        <div class="con-hint" id="conListHint" hidden></div>
         <div class="con-list" id="conList"></div>
       </div>
 
-      <div class="con-sh" data-ru="Управление" data-en="Actions">Управление</div>
-      <div class="con-actions" id="conActions"></div>
-      <div class="con-status" id="conActionStatus" hidden></div>
+      <!-- Замечание пользователя (2026-07-23): кнопка «Правила фаервола»
+           раньше подменяла содержимое СПИСКА ПОРТОВ (conListSection выше)
+           на вывод правил, из-за чего список портов пропадал и не
+           появлялся обратно даже после «Пересканировать порты» (та кнопка
+           не сбрасывала флаг подмены). Теперь у правил своя, независимая
+           секция — список открытых портов выше её больше никогда не
+           трогает и не прячет, см. app.js's renderConsole()/
+           handleFirewallRules/renderFirewallRulesList. Только для
+           perimeter. -->
+      <div id="perimeterFirewallRulesSection" hidden>
+        <div class="con-sh" data-ru="Правила фаервола" data-en="Firewall rules">Правила фаервола</div>
+        <div class="con-list" id="perimeterFirewallRulesList"></div>
+      </div>
+
+      <!-- A-38: «Текущая сеть» — определённая прямо сейчас сеть (SSID/шлюз/
+           профиль ОС, см. network_profile.py) + её категория
+           (Доверенная/Публичная) + переключатель категории. Показывается
+           только для консоли perimeter, см. app.js's renderConsole(). -->
+      <div id="perimeterNetworkSection" hidden>
+        <div class="con-sh" data-ru="Текущая сеть" data-en="Current network">Текущая сеть</div>
+        <div class="st-list">
+          <div class="st-row">
+            <b id="perimeterNetworkName"></b>
+            <span class="st-tgl" id="perimeterNetworkCategoryBadge"></span>
+          </div>
+        </div>
+        <div class="con-hint" id="perimeterNetworkHint" hidden></div>
+        <div class="con-actions">
+          <button class="btn-ghost" id="perimeterNetworkToggleBtn" onclick="handleToggleNetworkCategory()"></button>
+        </div>
+        <div class="con-status" id="perimeterNetworkStatus" hidden></div>
+      </div>
+
+      <!-- A-38: «Известные сети» — персистентный список ранее увиденных
+           сетей с их категориями (network_profiles). Показывается только
+           для консоли perimeter, см. app.js's renderConsole(). -->
+      <div id="perimeterKnownNetworksSection" hidden>
+        <div class="con-sh" data-ru="Известные сети" data-en="Known networks">Известные сети</div>
+        <div class="con-list" id="perimeterKnownNetworksList"></div>
+      </div>
+
+      <!-- A-45: «Проверить обновления»/«Применить обновления» — пересмотр
+           решения A-43 не давать «Обновить сценарии» elevated-доступ (см.
+           crowdsec.py's «A-45 addendum» докстринг и
+           docs/план-спецификация-фаза-0-обновление-сценариев-2026-07-25.md):
+           двухшаговый UX — «Проверить обновления» (elevated, честный
+           сырой план cscli hub upgrade --dry-run, тот же принцип «показать
+           реальный вывод», что и «Правила фаервола» A-36) → «Применить
+           обновления» (отдельный elevated-клик, показывается ТОЛЬКО если
+           план содержит реальные апгрейды). Показывается только для
+           консоли ids, см. app.js's renderConsole()/
+           handleCheckScenarioUpdates/renderScenarioUpdatesSection. -->
+      <div id="idsScenarioUpdatesSection" hidden>
+        <div class="con-sh" data-ru="Обновления сценариев" data-en="Scenario updates">Обновления сценариев</div>
+        <div class="con-list" id="idsScenarioUpdatesList"></div>
+        <div class="con-hint" id="idsScenarioUpdatesNote" hidden></div>
+        <div class="con-actions">
+          <button class="btn-accent" id="idsScenarioUpdatesApplyBtn" hidden
+            data-ru="Применить обновления" data-en="Apply updates">Применить обновления</button>
+        </div>
+        <div class="con-status" id="idsScenarioUpdatesApplyStatus" hidden></div>
+      </div>
+
+      <!-- A-42/A-44: «Белый список» — реальные записи CrowdSec allowlist,
+           теперь читаемые И редактируемые. Чтение — через LAPI
+           machine-уровня (crowdsec.py's fetch_allowlists). Запись —
+           elevated docker exec (crowdsec.py's add_to_allowlist/
+           remove_from_allowlist, тот же прецедент, что и A-43's «Показать/
+           изменить пороги»): инлайн-форма добавления по образцу A-33's
+           «Проверить папку», кнопка «Удалить» на каждой строке по образцу
+           A-43's «Сохранить». Показывается только для консоли ids, см.
+           app.js's renderConsole(). -->
+      <div id="idsAllowlistSection" hidden>
+        <div class="con-sh" data-ru="Белый список" data-en="Allowlist">Белый список</div>
+        <div class="notif-contacts">
+          <input type="text" id="idsAllowlistValueInput"
+            data-ru-ph="IP или CIDR (например 203.0.113.5)"
+            data-en-ph="IP or CIDR (e.g. 203.0.113.5)"
+            placeholder="IP или CIDR (например 203.0.113.5)">
+          <input type="text" id="idsAllowlistCommentInput"
+            data-ru-ph="Комментарий (необязательно)"
+            data-en-ph="Comment (optional)"
+            placeholder="Комментарий (необязательно)">
+          <button class="btn-accent" id="idsAllowlistAddBtn" onclick="handleAddToAllowlist()"
+            data-ru="Добавить в белый список" data-en="Add to allowlist">Добавить в белый список</button>
+        </div>
+        <div class="con-status" id="idsAllowlistAddStatus" hidden></div>
+        <div class="con-list" id="idsAllowlistList"></div>
+      </div>
+
+      <!-- Замечание пользователя (2026-08-02): «Проверить папку» переехала
+           из этой инлайн-секции в кнопку «Управления» (см.
+           CONSOLE_META.av.actions), открывающую avCustomScanModalOverlay
+           ниже (модалка с реальным нативным выбором папки) — история
+           сканирований ниже остаётся на месте, никак не связана с этим
+           переносом. -->
+
+      <div id="avScanHistorySection" hidden>
+        <div class="con-sh" data-ru="История сканирований" data-en="Scan history">История сканирований</div>
+        <div class="con-list" id="avScanHistoryList"></div>
+      </div>
 
       <div class="con-sh" data-ru="Настройки" data-en="Settings">Настройки</div>
       <div class="st-list" id="conSettings"></div>
@@ -212,9 +413,181 @@
         </div>
       </div>
     </section>
+
+    <!-- НАСТРОЙКИ → СТЕК ЗАЩИТЫ (A-60): статус Docker/контейнеров/креденшелов,
+         кнопка «Развернуть стек защиты» (admin, POST /security/stack/bootstrap),
+         пошаговый результат и честная подсказка о перезапуске приложения
+         (Settings читаются при старте — перезапуск необходим, не магия). -->
+    <section class="view" id="view-stack">
+      <button class="con-back" onclick="closeStackScreen()">‹ <span data-ru="Обзор" data-en="Overview">Обзор</span></button>
+      <h1 data-ru="Стек защиты" data-en="Security stack">Стек защиты</h1>
+      <p class="muted" data-ru="CrowdSec, ClamAV и Wazuh поднимаются как отдельные Docker-контейнеры и питают консоли «Обнаружение вторжений», «Вирусная активность» и «Журналы ОС». Развертывание скачает образы контейнеров (может занять несколько минут) и создаст настройки подключения."
+        data-en="CrowdSec, ClamAV and Wazuh run as separate Docker containers and feed the Intrusions, Antivirus and OS logs consoles. Deployment downloads the container images (may take a few minutes) and creates the connection settings.">
+        CrowdSec, ClamAV и Wazuh поднимаются как отдельные Docker-контейнеры и питают консоли «Обнаружение вторжений», «Вирусная активность» и «Журналы ОС». Развертывание скачает образы контейнеров (может занять несколько минут) и создаст настройки подключения.
+      </p>
+
+      <div class="con-sh" data-ru="Статус" data-en="Status">Статус</div>
+      <div class="st-list" id="stackStatusList">
+        <div class="con-empty" data-ru="Загрузка…" data-en="Loading…">Загрузка…</div>
+      </div>
+
+      <div class="con-actions">
+        <button class="btn-accent" id="stackBootstrapBtn" onclick="handleStackBootstrap()"
+          data-ru="Развернуть стек защиты" data-en="Deploy security stack">Развернуть стек защиты</button>
+      </div>
+      <div class="con-status" id="stackBootstrapStatus" hidden></div>
+
+      <div class="con-hint" id="stackRestartHint" hidden></div>
+
+      <div class="con-list" id="stackStepsList" hidden></div>
+    </section>
   </main>
 </div>
 
+<!-- A-37: модальное окно деталей открытого порта — клик по строке таблицы
+     «Открытые порты» консоли «Периметр» (A-31) открывает это окно с
+     port/protocol/process/PID и кнопками «Блокировать»/«Разблокировать»
+     (см. app.js's openPortModal/handleBlockPort/handleUnblockPort). Вне
+     .panel — position:fixed сам по себе перекрывает весь экран независимо
+     от места в DOM, см. styles.css's .modal-overlay. -->
+<div class="modal-overlay" id="portModalOverlay" hidden onclick="handlePortModalOverlayClick(event)">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="portModalTitle">
+    <button class="modal-close" type="button" onclick="closePortModal()" aria-label="Close">×</button>
+    <div class="modal-h" id="portModalTitle" data-ru="Открытый порт" data-en="Open port">Открытый порт</div>
+    <div class="con-list" id="portModalDetails"></div>
+    <div class="con-status" id="portModalStatus" hidden></div>
+    <div class="con-actions">
+      <button class="btn-danger" type="button" id="portModalBlockBtn" onclick="handleBlockPort()"
+        data-ru="🔒 Блокировать" data-en="🔒 Block">🔒 Блокировать</button>
+      <button class="btn-ghost" type="button" id="portModalUnblockBtn" onclick="handleUnblockPort()"
+        data-ru="Разблокировать" data-en="Unblock">Разблокировать</button>
+    </div>
+  </div>
+</div>
+
+<!-- A-53: модальное окно деталей АКТИВНОГО СОЕДИНЕНИЯ — клик по строке
+     таблицы «Активные соединения» консоли «Сеть» (A-51) открывает это окно
+     (см. app.js's openConnectionModal/renderConnectionModal). Два разных
+     действия, оба потенциально разрушительные — «Заблокировать IP» (новый
+     локальный блок на файрволе, A-52's os_firewall.py block_ip) и
+     «Завершить процесс» (SIGTERM с повторной проверкой PID, A-52's
+     os_processes.py terminate_process). По требованию пользователя —
+     «максимально мягко и защищённо, с предупреждениями несколько раз» —
+     защита в несколько слоёв: (1) постоянный предупреждающий текст ниже
+     (не скрывается, в отличие от #connectionModalStatus), (2) ДВА отдельных
+     window.confirm() перед самим завершением процесса (см.
+     handleTerminateConnectionProcess), (3) настоящий пароль ОС (elevated_run
+     на сервере), (4) повторная проверка PID/имени процесса ВНУТРИ
+     elevated-скрипта прямо перед kill (см. os_processes.py). -->
+<div class="modal-overlay" id="connectionModalOverlay" hidden onclick="handleConnectionModalOverlayClick(event)">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="connectionModalTitle">
+    <button class="modal-close" type="button" onclick="closeConnectionModal()" aria-label="Close">×</button>
+    <div class="modal-h" id="connectionModalTitle" data-ru="Соединение" data-en="Connection">Соединение</div>
+    <div class="con-status warn" id="connectionModalWarning"
+      data-ru="⚠ Оба действия ниже необратимы для текущего состояния сети/процесса — блокировка IP и завершение процесса выполняются только после подтверждения и настоящего пароля администратора."
+      data-en="⚠ Both actions below are irreversible for the current network/process state — blocking an IP and terminating a process only run after confirmation and a real administrator password.">⚠ Оба действия ниже необратимы для текущего состояния сети/процесса — блокировка IP и завершение процесса выполняются только после подтверждения и настоящего пароля администратора.</div>
+    <div class="con-list" id="connectionModalDetails"></div>
+    <div class="con-status" id="connectionModalStatus" hidden></div>
+    <div class="con-actions">
+      <button class="btn-danger" type="button" id="connectionModalBlockIpBtn" onclick="handleBlockConnectionIp()"
+        data-ru="🔒 Заблокировать IP" data-en="🔒 Block IP">🔒 Заблокировать IP</button>
+      <button class="btn-danger" type="button" id="connectionModalTerminateBtn" onclick="handleTerminateConnectionProcess()"
+        data-ru="⛔ Завершить процесс" data-en="⛔ Terminate process">⛔ Завершить процесс</button>
+    </div>
+  </div>
+</div>
+
+<!-- A-43: модальное окно «Показать/изменить пороги» сценариев CrowdSec —
+     кнопка «Показать/изменить пороги» на консоли «Обнаружение вторжений»
+     (см. app.js's handleScenarioThresholds/renderScenarioThresholdsModal).
+     Открытие модалки САМО уже разовый elevated-запрос (чтение); «Сохранить»
+     у КАЖДОЙ строки — свой ОТДЕЛЬНЫЙ следующий elevated-запрос (см.
+     handleSaveScenarioThreshold) — ровно тот же паттерн, что A-37's
+     Блокировать/Разблокировать в portModal выше, не один elevated-вызов на
+     всю модалку. -->
+<div class="modal-overlay" id="scenarioThresholdsOverlay" hidden onclick="handleScenarioThresholdsOverlayClick(event)">
+  <div class="modal-card modal-card-wide" role="dialog" aria-modal="true" aria-labelledby="scenarioThresholdsTitle">
+    <button class="modal-close" type="button" onclick="closeScenarioThresholdsModal()" aria-label="Close">×</button>
+    <div class="modal-h" id="scenarioThresholdsTitle" data-ru="Пороги сценариев CrowdSec" data-en="CrowdSec scenario thresholds">Пороги сценариев CrowdSec</div>
+    <div class="con-list" id="scenarioThresholdsList"></div>
+  </div>
+</div>
+
+<!-- Замечание пользователя (2026-08-02): «Проверить папку» — теперь открыта
+     из «Управление» (см. CONSOLE_META.av.actions/handleOpenCustomScanModal),
+     не инлайн-секцией. «Выбрать папку…» — реальный нативный OS-диалог
+     (server-side POST /consoles/av/clamav/pick-folder, см. clamav.py's
+     pick_scan_folder) — не браузерный <input type=file>, который не может
+     отдать JS настоящий абсолютный путь. Текстовое поле остаётся видимым
+     и редактируемым и после выбора — честный fallback там, где нативный
+     диалог ещё не реализован (не macOS), и ровно то же самое поле, что
+     POST .../scan/custom уже принимал раньше. -->
+<div class="modal-overlay" id="avCustomScanModalOverlay" hidden onclick="handleAvCustomScanOverlayClick(event)">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="avCustomScanModalTitle">
+    <button class="modal-close" type="button" onclick="closeAvCustomScanModal()" aria-label="Close">×</button>
+    <div class="modal-h" id="avCustomScanModalTitle" data-ru="Проверить папку" data-en="Scan a folder">Проверить папку</div>
+    <div class="con-hint" data-ru="Можно выбрать любую папку через системный диалог или ввести путь вручную — программы, системные папки, внешние диски тоже можно проверить."
+      data-en="Pick any folder via the system dialog or type a path manually — applications, system folders, and external drives can be scanned too.">Можно выбрать любую папку через системный диалог или ввести путь вручную — программы, системные папки, внешние диски тоже можно проверить.</div>
+    <div class="con-actions">
+      <button class="btn-ghost" type="button" id="avPickFolderBtn" onclick="handlePickScanFolder()"
+        data-ru="📁 Выбрать папку…" data-en="📁 Choose folder…">📁 Выбрать папку…</button>
+    </div>
+    <div class="notif-contacts">
+      <input type="text" id="avCustomScanPath"
+        data-ru-ph="Путь внутри разрешённых папок (например ~/Downloads/подпапка)"
+        data-en-ph="Path inside an allowed folder (e.g. ~/Downloads/subfolder)"
+        placeholder="Путь внутри разрешённых папок">
+      <button class="btn-accent" id="avCustomScanBtn" onclick="handleCustomScan()"
+        data-ru="Начать проверку" data-en="Start scan">Начать проверку</button>
+    </div>
+    <div class="con-status" id="avCustomScanStatus" hidden></div>
+  </div>
+</div>
+
+<!-- Замечание пользователя (2026-08-02): «Расписание полной проверки» —
+     теперь реально сохраняется и реально запускает проверку по расписанию
+     (services/av/scheduler.AvScanScheduler), не просто текст. -->
+<div class="modal-overlay" id="avScheduleModalOverlay" hidden onclick="handleAvScheduleOverlayClick(event)">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="avScheduleModalTitle">
+    <button class="modal-close" type="button" onclick="closeAvScheduleModal()" aria-label="Close">×</button>
+    <div class="modal-h" id="avScheduleModalTitle" data-ru="Расписание полной проверки" data-en="Full scan schedule">Расписание полной проверки</div>
+    <div class="st-list">
+      <div class="st-row">
+        <b data-ru="Включено" data-en="Enabled">Включено</b>
+        <input type="checkbox" id="avScheduleEnabledInput">
+      </div>
+      <div class="st-row">
+        <b data-ru="Время (UTC)" data-en="Time (UTC)">Время (UTC)</b>
+        <span>
+          <input type="number" id="avScheduleHourInput" min="0" max="23" style="width:56px">
+          :
+          <input type="number" id="avScheduleMinuteInput" min="0" max="59" style="width:56px">
+        </span>
+      </div>
+    </div>
+    <!-- Замечание пользователя (2026-08-02): дни недели — один или
+         несколько, галочками. 0=Пн...6=Вс (Python's datetime.weekday(),
+         тот же порядок, что и AvSettings.full_scan_days в бэкенде, см.
+         app.js's AV_SCHEDULE_DAY_LABELS/handleSaveAvSchedule). -->
+    <div class="con-sh" data-ru="Дни недели" data-en="Days of the week">Дни недели</div>
+    <div class="notif-chans" id="avScheduleDaysBox" style="margin:0 0 14px;"></div>
+    <div class="con-hint" data-ru="Время указывается по UTC, не по времени этого компьютера."
+      data-en="The time is UTC, not this computer's own local time.">Время указывается по UTC, не по времени этого компьютера.</div>
+    <div class="con-actions">
+      <button class="btn-accent" type="button" onclick="handleSaveAvSchedule()"
+        data-ru="Сохранить" data-en="Save">Сохранить</button>
+    </div>
+    <div class="con-status" id="avScheduleModalStatus" hidden></div>
+  </div>
+</div>
+
+<!-- A-49: real land/continent outline data for «Карта соединений» — a plain
+     global var, loaded before app.js so drawConnectionsMap() can use it
+     immediately on first render (see that file's own header comment for
+     source/licence). Loaded from THIS same local server, same as app.js/
+     styles.css — no third-party request, preserves A-41's own "zero
+     network requests" guarantee for this map. -->
+<script src="assets/world_land_outline.js"></script>
 <script src="assets/app.js"></script>
 </body>
 </html>

@@ -21,6 +21,18 @@ shared across two modules here instead of kept private to one.
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
+
+# Windows only: a GUI process (the tray app has no console of its own)
+# spawns every console child — netsh, powershell, osqueryi, restic — with a
+# NEW VISIBLE console window unless CREATE_NO_WINDOW is passed. Before this
+# flag existed, every panel refresh / metrics tick flashed terminal windows
+# over the user's desktop and made working impossible (found live, 2026-09-19
+# Windows acceptance). POSIX has no such concept; subprocess accepts a
+# creationflags=0 there fine (any non-zero value would raise), so a single
+# constant works for all three platforms.
+WINDOWS_CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 
 class LocalCommandNotFound(RuntimeError):
@@ -43,7 +55,10 @@ async def run_local_command(*args: str, timeout: float = 5.0) -> tuple[int, str,
     """
     try:
         process = await asyncio.create_subprocess_exec(
-            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            creationflags=WINDOWS_CREATE_NO_WINDOW,
         )
     except FileNotFoundError as exc:
         raise LocalCommandNotFound(f"{args[0]!r} is not installed on this host") from exc
@@ -65,6 +80,11 @@ async def run_local_command(*args: str, timeout: float = 5.0) -> tuple[int, str,
 # netsh/manage-bde (Windows) are each documented (or, for the macOS ones,
 # empirically confirmed while building this task — see os_firewall.py /
 # os_disk_encryption.py) to print when run without the privileges they need.
+# The Russian rows cover MUI-localized tool output on ru-RU Windows — the
+# product's primary audience's OS — where the same denials print as e.g.
+# «Отказано в доступе» (caught live by the 2026-09-19 Windows acceptance:
+# non-elevated Get-BitLockerVolume denies in Russian, which the English-only
+# set misclassified as `unreachable` instead of `permission_denied`).
 _PERMISSION_DENIED_MARKERS = (
     "permission denied",
     "must be root",
@@ -73,6 +93,8 @@ _PERMISSION_DENIED_MARKERS = (
     "run as administrator",
     "you need to be root",
     "requires elevation",
+    "отказано в доступе",
+    "требуются права администратора",
 )
 
 

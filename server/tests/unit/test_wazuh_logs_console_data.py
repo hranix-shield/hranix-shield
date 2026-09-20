@@ -56,7 +56,11 @@ async def test_not_configured_reports_honest_placeholder_not_fabricated_zeros():
         "sources": None,
     }
     assert result["entries"] == []
-    assert result["chart"]["values"] == []
+    # A-26: this connector no longer returns a `chart` key at all — real
+    # chart history now comes from services/metrics/chart.chart_values_7d()
+    # in routers/security_console.py, not from this pure external-tool
+    # client (see fetch_logs_console_data's own docstring).
+    assert "chart" not in result
 
 
 @pytest.mark.unit

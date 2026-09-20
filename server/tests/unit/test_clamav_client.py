@@ -66,6 +66,26 @@ async def test_version_returns_the_raw_line():
 
 
 @pytest.mark.unit
+async def test_reload_succeeds_against_a_real_socket_server():
+    """A-27: `RELOAD` -> `"RELOADING"` — live-confirmed shape against the
+    real `hranix-clamav` container (see `ClamdClient.reload`'s docstring),
+    reproduced here by the shared fake server."""
+    async with FakeClamd() as fake:
+        client = ClamdClient(host="127.0.0.1", port=fake.port, timeout=2.0)
+        await client.reload()  # must not raise
+
+
+@pytest.mark.unit
+async def test_reload_raises_unreachable_when_nothing_listens():
+    client = ClamdClient(host="127.0.0.1", port=free_but_closed_port(), timeout=1.0)
+
+    with pytest.raises(ClamdError) as excinfo:
+        await client.reload()
+
+    assert excinfo.value.reason == "unreachable"
+
+
+@pytest.mark.unit
 async def test_scan_bytes_streams_the_exact_payload_via_instream_framing():
     """Confirms this connector's own chunking/zero-length-terminator framing
     round-trips correctly — the fake server reassembles whatever it
@@ -253,9 +273,12 @@ async def test_fetch_av_clamav_data_ok_reports_real_version_and_quarantine_count
 
 
 @pytest.mark.unit
-async def test_fetch_av_clamav_data_derives_last_scan_from_the_job_registry(tmp_path):
+async def test_fetch_av_clamav_data_derives_last_scan_from_the_most_recent_full_job(tmp_path):
+    """Post-merge user request (2026-08-02): deliberately a `"full"` job —
+    see `test_fetch_av_clamav_data_ignores_quick_and_custom_jobs_for_these_two_fields`
+    below for the complementary "quick/custom must NOT count" case."""
     registry = ClamAvScanJobRegistry()
-    job = registry.create("quick")
+    job = registry.create("full")
     registry.mark_completed(job, scanned_count=5, infected=[])
 
     async with FakeClamd() as fake:
@@ -273,9 +296,9 @@ async def test_fetch_av_clamav_data_derives_last_scan_from_the_job_registry(tmp_
 
 
 @pytest.mark.unit
-async def test_fetch_av_clamav_data_clean_is_false_when_last_job_found_something(tmp_path):
+async def test_fetch_av_clamav_data_clean_is_false_when_last_full_job_found_something(tmp_path):
     registry = ClamAvScanJobRegistry()
-    job = registry.create("quick")
+    job = registry.create("full")
     registry.mark_completed(
         job, scanned_count=1, infected=[{"path": "/tmp/x", "signature": "Eicar-Test-Signature"}]
     )
@@ -291,3 +314,56 @@ async def test_fetch_av_clamav_data_clean_is_false_when_last_job_found_something
         result = await fetch_av_clamav_data(settings, job_registry=registry)
 
         assert result["clean"] is False
+
+
+@pytest.mark.unit
+async def test_fetch_av_clamav_data_ignores_quick_and_custom_jobs_for_these_two_fields(tmp_path):
+    """Regression test for a real user complaint (2026-08-02): a quick scan
+    was silently making "Последняя проверка"/"Угроз не найдено" look
+    freshly re-checked. Only a completed FULL job may ever set
+    `last_scan_at`/`clean` — a quick (or custom) job, even one completed
+    AFTER the last full job, must be ignored for these two fields."""
+    registry = ClamAvScanJobRegistry()
+    full_job = registry.create("full")
+    registry.mark_completed(full_job, scanned_count=500, infected=[])
+    quick_job = registry.create("quick")  # completes AFTER full_job, must still be ignored
+    registry.mark_completed(
+        quick_job, scanned_count=5, infected=[{"path": "/tmp/x", "signature": "Eicar-Test-Signature"}]
+    )
+
+    async with FakeClamd() as fake:
+        settings = Settings(
+            clamav_enabled=True,
+            clamav_host="127.0.0.1",
+            clamav_port=fake.port,
+            clamav_quarantine_dir=str(tmp_path / "quarantine"),
+        )
+
+        result = await fetch_av_clamav_data(settings, job_registry=registry)
+
+        # Reflects full_job (clean, no infections) — NOT the more recent,
+        # infected quick_job.
+        assert result["last_scan_at"] == full_job.finished_at
+        assert result["clean"] is True
+
+
+@pytest.mark.unit
+async def test_fetch_av_clamav_data_last_scan_is_none_when_only_quick_jobs_exist(tmp_path):
+    """No full scan has ever completed yet — honestly `None`/`None`, never
+    fabricated from a quick scan's own result."""
+    registry = ClamAvScanJobRegistry()
+    job = registry.create("quick")
+    registry.mark_completed(job, scanned_count=5, infected=[])
+
+    async with FakeClamd() as fake:
+        settings = Settings(
+            clamav_enabled=True,
+            clamav_host="127.0.0.1",
+            clamav_port=fake.port,
+            clamav_quarantine_dir=str(tmp_path / "quarantine"),
+        )
+
+        result = await fetch_av_clamav_data(settings, job_registry=registry)
+
+        assert result["last_scan_at"] is None
+        assert result["clean"] is None

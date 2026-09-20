@@ -1,0 +1,61 @@
+# Регрессионный CI: pytest на каждый push/PR (аудит-2026-09-19 §8.2, R4).
+#
+# Почему requirements-packaged.txt, а не requirements.txt: packaged — это
+# проверенный (grep'ом по server/app, см. заголовок самого файла) подмножество
+# БЕЗ фаза-2/голосовых пакетов (torch ~2 ГБ с CUDA-зависимостями на ubuntu,
+# llama-index, sentence-transformers и т.д.), которые в Фазе 0 не импортирует
+# ни одна строка server/app. Полная установка requirements.txt в CI стоила бы
+# минуты скачивания ради пакетов, которых раннер никогда не выполнит.
+# Если код Фазы 1+ начнёт импортировать что-то из тяжёлого набора — этот CI
+# честно упадёт на ImportError, как должен (та же логика, что делает
+# requirements-packaged.txt контрактом нативных установщиков).
+#
+# Живые маркеры (crowdsec_live/osquery_live/clamav_live/wazuh_live/
+# crowdsec_write_live — см. server/pytest.ini) самопропускаются без
+# Docker-компаньонов: обычный прогон полностью офлайн. E2E (Playwright)
+# самопропускается без установленного браузера.
+#
+# windows-latest: сьют написан и прогонялся на macOS; Windows-путь — наименее
+# проверенная платформа (аудит R6). Статус continue-on-error, чтобы желтая
+# галочка была сигналом, а не блокером; перевести в строгий режим после
+# первой ручной Windows-приёмки (задача-потомок аудита §8.3).
+
+name: Tests (pytest)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-packaged.txt
+          pip install pytest==8.3.4 pytest-asyncio==0.25.1
+
+      - name: Run tests
+        run: pytest -q

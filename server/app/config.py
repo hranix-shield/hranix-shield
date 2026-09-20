@@ -225,6 +225,54 @@ class Settings(BaseSettings):
     crowdsec_lapi_url: str | None = None
     crowdsec_api_key: str | None = None
 
+    # A-29: a SECOND, separate CrowdSec credential — machine-level LAPI auth
+    # (`cscli machines add`, see infra/security/crowdsec/docker-compose.yml's
+    # header comment and infra/security/crowdsec/README.md), required
+    # because a bouncer's `X-Api-Key` above is read-only by CrowdSec's own
+    # design: it can list decisions but gets a hard HTTP 401 from
+    # `POST /v1/alerts`/`DELETE /v1/decisions/{id}` (confirmed live — see
+    # crowdsec.py's module docstring). This is a genuinely new class of
+    # access (write, not read), not a bigger bouncer key.
+    #
+    # Deliberately NOT auto-generated-and-persisted the way jwt_secret/
+    # restic_password are (services.auth.resolve_jwt_secret/
+    # services.backup.service.resolve_backup_password_file, A-19): those two
+    # work because this process is the ONLY party that ever needs to agree
+    # with itself on the value (it signs and verifies its own JWTs; it
+    # creates its own restic repo with the password it picked). A CrowdSec
+    # machine credential is the opposite — `cscli machines add <id>
+    # --password <pw>` on the CrowdSec container is what actually creates
+    # this login, so this process is the SECOND party, not the sole
+    # authority: an auto-generated value here would just be a password
+    # CrowdSec never heard of. Same reasoning as crowdsec_api_key/
+    # wazuh_api_password above (third-party external service, no in-repo
+    # default is possible) — but see infra/security/crowdsec/README.md for
+    # the one operational echo of jwt_secret/restic_password's discipline
+    # that DOES apply here: when *choosing* the machine password while
+    # running `cscli machines add`, generate it randomly (e.g. `python3 -c
+    # "import secrets; print(secrets.token_urlsafe(32))"`), never type a
+    # memorable/fixed string — the same "no fixed secret, ever" spirit,
+    # just executed by the operator at provisioning time instead of by this
+    # process at runtime.
+    crowdsec_machine_id: str | None = None
+    crowdsec_machine_password: str | None = None
+
+    # A-40: offline IP -> country resolution for the `network` console's
+    # connections table (services/mcp/security_connectors/geoip.py — see
+    # that module's docstring for the full licence research behind why
+    # this is sapics/ip-location-db's public-domain "user-country" dataset,
+    # not MaxMind GeoLite2). Unset by default: geoip.py's own
+    # `resolve_geoip_dir()` falls back to the vendored copy
+    # `packaging/<os>/vendor-geoip.sh` produces (packaged mode) or this
+    # repo's own `packaging/<os>/vendor/geoip/` (dev mode) when this is
+    # unset — same "explicit override wins, otherwise vendored-if-present,
+    # otherwise honestly unavailable" shape osquery.py's `_resolve_osqueryi`
+    # already established, just for a data directory instead of a binary.
+    # This setting is the escape hatch the A-40 task brief explicitly asked
+    # for: an operator who downloaded a copy of the same public-domain
+    # dataset by hand, without ever running the vendor script.
+    geoip_database_dir: str | None = None
+
     # A-17: ClamAV (GPLv2) — signature scanner completing the `av` console's
     # sources (osquery A-15 process telemetry is the first; Wazuh A-16 is
     # still pending). Runs as a fully separate Docker container
@@ -281,6 +329,36 @@ class Settings(BaseSettings):
     wazuh_api_username: str | None = None
     wazuh_api_password: str | None = None
     wazuh_agent_id: str = "000"
+
+    # A-26: metric history sampler (services/metrics/). Every 5 non-backup
+    # consoles' already-real numeric fields (see sampler.py's own docstring
+    # for exactly which field per console, and why) get one row written to
+    # `metric_samples` this often, feeding each console's `chart.values`
+    # (last 7 days, see services/metrics/chart.py). 15 minutes is frequent
+    # enough that a chart has a meaningfully-shaped day of points (~96
+    # samples/day) without hammering CrowdSec/Wazuh/clamd/osquery on every
+    # request the way computing the chart on-demand from those connectors
+    # directly would — same "recurring background job, not on the request
+    # path" reasoning as notifications_escalation_check_interval_seconds
+    # above, just a different, longer cadence (a metric trend does not need
+    # a fresh datapoint every 60s the way an overdue-notification check
+    # does).
+    metrics_sample_interval_seconds: int = 900
+
+    # A-38: network-profile background monitor
+    # (services/mcp/security_connectors/network_profile.py) — how often it
+    # re-detects the current network (SSID/gateway-IP on macOS, nmcli
+    # connection UUID on Linux, Get-NetConnectionProfile name on Windows).
+    # A shorter cadence than metrics_sample_interval_seconds above on
+    # purpose: unlike a slow-moving metric trend, "which network am I on"
+    # is exactly the kind of thing an operator expects to update within
+    # roughly a minute of actually changing networks (this task's own DoD:
+    # switching Wi-Fi networks must visibly change the displayed current
+    # profile) — but still a background poll, not on the request path, so
+    # 30s (a handful of cheap local subprocess calls, never a network
+    # round-trip) comfortably avoids hammering `networksetup`/`nmcli` the
+    # way a sub-second interval would.
+    network_profile_poll_interval_seconds: int = 30
 
     @property
     def trusted_contact_emails_list(self) -> list[str]:

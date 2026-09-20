@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -10,11 +11,16 @@ from app.config import get_settings
 from app.infra.logger_config import configure_logging
 from app.routers import auth, diagnostics, health, notifications, security_console
 from app.services.auth import ensure_bootstrap_admin
+from app.services.av import create_default_av_scan_scheduler
 from app.services.backup import create_default_scheduler, run_startup_integrity_check
 from app.services.event_bus import EventBus, register_default_subscribers
 from app.services.health import HealthRegistry, register_default_checks
 from app.services.mcp import MCPRegistry
 from app.services.mcp.security_connectors import register_default_security_connectors
+from app.services.mcp.security_connectors.network_profile import (
+    create_default_network_profile_scheduler,
+)
+from app.services.metrics import create_default_metrics_scheduler
 from app.services.notifications import (
     NotificationRegistry,
     NotificationService,
@@ -24,6 +30,7 @@ from app.services.notifications import (
     register_default_topics,
 )
 from app.services.mcp.security_connectors.clamav import ClamAvScanJobRegistry
+from app.services.mcp.security_connectors.traffic_counters import TrafficCounterRegistry
 from app.services.security_console import SecurityConsoleRegistry
 
 # Panel static assets (A-10): HTML/CSS/JS live under app/static/ — inside the
@@ -42,6 +49,8 @@ from app.services.security_console import SecurityConsoleRegistry
 # see A-10 task report). A dedicated "/panel" prefix leaves "/" and every
 # other path free for exactly this kind of dynamic route registration.
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+logger = logging.getLogger(__name__)
 
 
 class _NoCacheStaticFiles(StaticFiles):
@@ -94,7 +103,22 @@ async def _lifespan(app: FastAPI):
     settings = get_settings()
     scheduler = None
     if settings.backup_enabled:
-        await run_startup_integrity_check(event_bus=app.state.event_bus, settings=settings)
+        # A-59 defense in depth: the backup subsystem must never be able to
+        # kill the app at startup, whatever goes wrong inside this check.
+        # (A-59's primary fix makes a missing restic binary surface as
+        # ResticError — which run_startup_integrity_check itself already
+        # catches — but this wrapper is what guarantees the invariant even
+        # if some future failure mode escapes that vocabulary: log it loudly
+        # with the full traceback, then keep starting. The honest degraded
+        # state is already user-visible through the console's connector
+        # status (A-55) and the last BackupJob row, so swallowing here hides
+        # nothing the operator couldn't see in the panel.)
+        try:
+            await run_startup_integrity_check(event_bus=app.state.event_bus, settings=settings)
+        except Exception:
+            logger.exception(
+                "backup: startup integrity check raised — continuing app startup"
+            )
         scheduler = create_default_scheduler(event_bus=app.state.event_bus, settings=settings)
         if scheduler is not None:
             scheduler.start()
@@ -118,6 +142,61 @@ async def _lifespan(app: FastAPI):
     escalation_scheduler.start()
     app.state.notification_escalation_scheduler = escalation_scheduler
 
+    # A-26: the metric-history sampler (services/metrics/) — same
+    # "unconditional, not gated behind a settings flag" reasoning as the
+    # escalation sweep just above: its only externally-visible effect is
+    # rows accumulating in `metric_samples`, harmless for any operator who
+    # never configured any of the 5 connectors it reads from (see
+    # sampler.py's docstring — every unconfigured/unreachable source is
+    # simply skipped that round, nothing is fabricated). Always sleeps
+    # before its first tick (see MetricsSampleScheduler's docstring), so
+    # short-lived lifespans in tests never reach a real DB query unless a
+    # test explicitly drives it.
+    metrics_sample_scheduler = create_default_metrics_scheduler(settings=settings)
+    metrics_sample_scheduler.start()
+    app.state.metrics_sample_scheduler = metrics_sample_scheduler
+
+    # A-38: the network-profile background monitor
+    # (services/mcp/security_connectors/network_profile.py) — same
+    # "unconditional, not gated behind a settings flag" reasoning as the
+    # escalation sweep/metrics sampler above: its only externally-visible
+    # effects are rows accumulating in `network_profiles` (harmless — see
+    # that module's own docstring, a passive `GET /consoles/perimeter` read
+    # never writes, only this scheduler's own tick does) and, only on an
+    # actual network CHANGE into a `"public"`-categorised network, a real
+    # `security.alert` notification (never a silent auto-elevated firewall
+    # call, see that module's own "переключение уровня защиты" design-
+    # decision section). Wired with THIS app instance's own `event_bus` (not
+    # a module-level singleton) so the nudge notification goes through the
+    # same isolated bus every other event in this app instance uses — see
+    # services/backup/wiring.py's own scheduler factories for the same
+    # `event_bus=app.state.event_bus` wiring shape. Always sleeps before its
+    # first tick (see NetworkProfileScheduler's docstring), so short-lived
+    # test lifespans never reach a real subprocess call/DB query unless a
+    # test explicitly drives it.
+    network_profile_scheduler = create_default_network_profile_scheduler(
+        event_bus=app.state.event_bus, settings=settings
+    )
+    network_profile_scheduler.start()
+    app.state.network_profile_scheduler = network_profile_scheduler
+
+    # Post-merge user request (2026-08-02): the real daily full-scan
+    # schedule (services/av/) — same "unconditional, not gated behind a
+    # settings flag" reasoning as the metrics sampler/network-profile
+    # monitor above: its own tick is a harmless no-op DB read whenever
+    # `full_scan_schedule_enabled` is off (the honest default for a fresh
+    # install, see services/av/settings.py), so this can always run rather
+    # than needing yet another env flag. Uses the SAME
+    # `clamav_scan_job_registry` the console's own manual "Полная проверка"
+    # button already shares (set on `app.state` above, outside `_lifespan`,
+    # so already available here) — a scheduled scan shows up as the exact
+    # same kind of `ScanJob` a manual one would, not a second mechanism.
+    av_scan_scheduler = create_default_av_scan_scheduler(
+        job_registry=app.state.clamav_scan_job_registry, settings=settings
+    )
+    av_scan_scheduler.start()
+    app.state.av_scan_scheduler = av_scan_scheduler
+
     await ensure_bootstrap_admin()
 
     yield
@@ -125,6 +204,9 @@ async def _lifespan(app: FastAPI):
     if scheduler is not None:
         await scheduler.stop()
     await escalation_scheduler.stop()
+    await metrics_sample_scheduler.stop()
+    await network_profile_scheduler.stop()
+    await av_scan_scheduler.stop()
 
 
 def create_app() -> FastAPI:
@@ -162,6 +244,12 @@ def create_app() -> FastAPI:
     # history never leaks into another's (see
     # services/mcp/security_connectors/clamav.py's ClamAvScanJobRegistry).
     app.state.clamav_scan_job_registry = ClamAvScanJobRegistry()
+
+    # A-39: same non-singleton reasoning again — a fresh per-pid cumulative-
+    # counter baseline per create_app() call, so one test's/one process's
+    # traffic deltas never leak into another's (see
+    # services/mcp/security_connectors/traffic_counters.py's TrafficCounterRegistry).
+    app.state.traffic_counter_registry = TrafficCounterRegistry()
 
     # A-11: a fresh MCPRegistry per create_app() call, same non-singleton
     # reasoning as every registry above. Unlike A-9's original "laid down,
@@ -203,6 +291,16 @@ def create_app() -> FastAPI:
     # attribute, None until the lifespan actually starts the escalation
     # sweep (see _lifespan).
     app.state.notification_escalation_scheduler = None
+    # A-26: same reasoning again — always a valid attribute, None until the
+    # lifespan actually starts the metric-sample sweep (see _lifespan).
+    app.state.metrics_sample_scheduler = None
+    # A-38: same reasoning again — always a valid attribute, None until the
+    # lifespan actually starts the network-profile monitor (see _lifespan).
+    app.state.network_profile_scheduler = None
+    # Post-merge user request (2026-08-02): same reasoning again — always a
+    # valid attribute, None until the lifespan actually starts the AV
+    # full-scan scheduler (see _lifespan).
+    app.state.av_scan_scheduler = None
 
     app.add_middleware(
         CORSMiddleware,

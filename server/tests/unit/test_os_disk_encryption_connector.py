@@ -91,11 +91,19 @@ async def test_macos_fdesetup_permission_denied(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.unit
-async def test_windows_ok_when_manage_bde_reports_protection_on(monkeypatch: pytest.MonkeyPatch):
+async def test_windows_ok_when_get_bitlockervolume_reports_protection_on(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """CIM-путь (локале-независимый) вместо manage-bde-текста: «Protection
+    Status: Protection On» существует только в en-US выводе, ru-RU печатает
+    «Состояние защиты» — старый парсер на русской Windows давал unreachable
+    (поймано живой Windows-приёмкой 2026-09-19)."""
     monkeypatch.setattr(os_disk_encryption_module.platform, "system", lambda: "Windows")
-    output = "Volume C: []\n[OS Volume]\n    Protection Status:    Protection On\n"
+    output = '[{"MountPoint":"C:","ProtectionStatus":"On"},{"MountPoint":"D:","ProtectionStatus":"Off"}]'
     monkeypatch.setattr(
-        os_disk_encryption_module, "run_local_command", _fake_run({"manage-bde": (0, output, "")})
+        os_disk_encryption_module,
+        "run_local_command",
+        _fake_run({"powershell.exe": (0, output, "")}),
     )
 
     result = await fetch_disk_encryption_status()
@@ -104,16 +112,55 @@ async def test_windows_ok_when_manage_bde_reports_protection_on(monkeypatch: pyt
 
 
 @pytest.mark.unit
-async def test_windows_ok_when_manage_bde_reports_protection_off(monkeypatch: pytest.MonkeyPatch):
+async def test_windows_ok_when_get_bitlockervolume_reports_protection_off(
+    monkeypatch: pytest.MonkeyPatch,
+):
     monkeypatch.setattr(os_disk_encryption_module.platform, "system", lambda: "Windows")
-    output = "Volume C: []\n[OS Volume]\n    Protection Status:    Protection Off\n"
+    output = '[{"MountPoint":"C:","ProtectionStatus":"Off"}]'
     monkeypatch.setattr(
-        os_disk_encryption_module, "run_local_command", _fake_run({"manage-bde": (0, output, "")})
+        os_disk_encryption_module,
+        "run_local_command",
+        _fake_run({"powershell.exe": (0, output, "")}),
     )
 
     result = await fetch_disk_encryption_status()
 
     assert result == {"connector": {"status": "ok"}, "active": False}
+
+
+@pytest.mark.unit
+async def test_windows_reports_permission_denied_when_cim_denies_non_elevated_user(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Get-BitLockerVolume требует elevation (подтверждено живьём 2026-09-19:
+    неэлевированный пользователь из группы администраторов получает отказ
+    уже на слое CIM) — честный permission_denied вместо попытки парсинга."""
+    monkeypatch.setattr(os_disk_encryption_module.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        os_disk_encryption_module,
+        "run_local_command",
+        _fake_run({"powershell.exe": (1, "", "Get-CimInstance : Отказано в доступе \n")}),
+    )
+
+    result = await fetch_disk_encryption_status()
+
+    assert result == {"connector": {"status": "permission_denied"}, "active": None}
+
+
+@pytest.mark.unit
+async def test_windows_unparseable_bitlocker_output_is_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(os_disk_encryption_module.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        os_disk_encryption_module,
+        "run_local_command",
+        _fake_run({"powershell.exe": (0, "unexpected garbage", "")}),
+    )
+
+    result = await fetch_disk_encryption_status()
+
+    assert result == {"connector": {"status": "unreachable"}, "active": None}
 
 
 @pytest.mark.unit

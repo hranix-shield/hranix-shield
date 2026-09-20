@@ -47,6 +47,14 @@ async def _admin_headers(
         ("POST", "/security/consoles/av/clamav/scan/full"),
         ("GET", "/security/consoles/av/clamav/scan/full/some-job-id"),
         ("POST", "/security/consoles/av/clamav/quarantine"),
+        # A-27
+        ("GET", "/security/consoles/av/clamav/quarantine"),
+        ("POST", "/security/consoles/av/clamav/quarantine/some-item-id/restore"),
+        ("POST", "/security/consoles/av/clamav/reload"),
+        # Post-merge user request (2026-08-02)
+        ("POST", "/security/consoles/av/settings/full-scan-schedule"),
+        ("POST", "/security/consoles/av/clamav/update-databases"),
+        ("POST", "/security/consoles/av/clamav/pick-folder"),
     ],
 )
 async def test_clamav_endpoints_still_require_a_token(client: TestClient, method: str, route: str):
@@ -54,6 +62,56 @@ async def test_clamav_endpoints_still_require_a_token(client: TestClient, method
 
     assert response.status_code == 401
     assert response.json()["detail"] == {"error": "not_authenticated"}
+
+
+# ---------------------------------------------------------------------------
+# A-27 regression anchors: quarantine list/restore + reload, honest even
+# when clamav_enabled is off (the Phase 0 default, no monkeypatching below —
+# these exercise the REAL functions against whatever this test environment's
+# actual Settings/filesystem state is).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_quarantine_list_never_500s_and_is_a_real_list(
+    client: TestClient, migrated_session_maker: async_sessionmaker[AsyncSession]
+):
+    headers = await _admin_headers(client, migrated_session_maker, "a27_quarantine_list_regress")
+
+    response = client.get("/security/consoles/av/clamav/quarantine", headers=headers)
+
+    assert response.status_code == 200
+    assert isinstance(response.json()["items"], list)
+
+
+@pytest.mark.integration
+async def test_quarantine_restore_404s_cleanly_for_an_unknown_item(
+    client: TestClient, migrated_session_maker: async_sessionmaker[AsyncSession]
+):
+    headers = await _admin_headers(client, migrated_session_maker, "a27_quarantine_restore_regress")
+
+    response = client.post(
+        "/security/consoles/av/clamav/quarantine/no-such-item/restore", headers=headers
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == {"error": "quarantine_item_not_found"}
+
+
+@pytest.mark.integration
+async def test_reload_never_500s_when_clamav_is_off_by_default(
+    client: TestClient, migrated_session_maker: async_sessionmaker[AsyncSession]
+):
+    """No monkeypatching: `clamav_enabled` defaults to False (Phase 0
+    default, no `.env` in the test environment) — the real
+    `create_clamav_client` genuinely returns `None`, and the router must
+    translate that into an honest 503, never a 500."""
+    headers = await _admin_headers(client, migrated_session_maker, "a27_reload_regress")
+
+    response = client.post("/security/consoles/av/clamav/reload", headers=headers)
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {"error": "clamav_not_configured"}
 
 
 @pytest.mark.integration
@@ -194,3 +252,40 @@ async def test_quarantine_403s_cleanly_for_a_path_outside_scan_roots(
     assert response.status_code == 403
     assert response.json()["detail"] == {"error": "path_outside_scan_roots"}
     assert outside_file.exists()  # never moved
+
+
+# ---------------------------------------------------------------------------
+# Post-merge user request (2026-08-02) regression anchors: the old
+# `realtime_protection`/`scan_removable_media`/`scan_schedule` fields
+# (hardcoded literals with zero real capability behind them) must never
+# resurface, and `full_scan_schedule` must always be the honest,
+# DB-persisted default for a fresh install. Note: `pick_scan_folder`/
+# `update_clamav_databases`'s REAL (non-monkeypatched) code paths are
+# deliberately never exercised anywhere in this automated suite — both pop
+# a real native OS dialog (a folder-picker / an admin-password prompt) that
+# would hang an automated test run waiting for a human, or open an
+# unexpected window — see their own docstrings for the same "not
+# live-verified by an automated pass" disclosure `elevated.py` already
+# established for its own unverified platform branches.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_av_settings_never_resurface_the_old_fake_fields(
+    client: TestClient, migrated_session_maker: async_sessionmaker[AsyncSession]
+):
+    headers = await _admin_headers(client, migrated_session_maker, "post_merge_av_settings_regress")
+
+    response = client.get("/security/consoles/av", headers=headers)
+
+    assert response.status_code == 200
+    settings = response.json()["settings"]
+    assert "realtime_protection" not in settings
+    assert "scan_removable_media" not in settings
+    assert "scan_schedule" not in settings
+    assert settings["full_scan_schedule"] == {
+        "enabled": False,
+        "hour": 6,
+        "minute": 0,
+        "days": [0, 1, 2, 3, 4, 5, 6],
+    }

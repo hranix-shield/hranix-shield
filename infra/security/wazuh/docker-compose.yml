@@ -59,9 +59,48 @@
 #   - NO remote-agent-enrollment ports published (1514/1515/514/1516) — this
 #     deployment never accepts a remote agent connection (see Decision #1),
 #     so those ports are not even exposed, deliberately smaller surface than
-#     the official reference compose;
+#     the official reference compose. **REVISED by Decision #3 below (A-25,
+#     2026-07-18): 1514/1515 ARE now published, to 127.0.0.1 only — 514/1516
+#     remain unpublished, this bullet's original reasoning still holds for
+#     those two.**
 #   - the only host bind-mounts are the two explicitly-justified read-only
 #     project directories above — see Decision #2.
+#
+# ---------------------------------------------------------------------------
+# Decision #3 (A-25, 2026-07-18 — explicit architect revision of Decision #1,
+# not a silent edit): publish 1514/1515 to 127.0.0.1, to serve a now-real
+# legitimate agent.
+# ---------------------------------------------------------------------------
+# Decision #1 above (2026-07-16) deliberately did not publish the agent-
+# enrollment ports because, at the time, no legitimate agent existed to use
+# them — this manager only ever watched itself (agent "000"). A-19..A-22
+# (native macOS/Windows/Linux installers, see
+# docs/план-спецификация-фаза-0-нативные-установщики-2026-07-17.md) changed
+# that: there is now a real native install running on the user's own host,
+# and the whole point of A-25 (see
+# docs/план-спецификация-фаза-0-контур-безопасности-100-2026-07-18.md's "A-25"
+# section) is enrolling THAT install as a proper Wazuh agent so FIM watches
+# the real platformdirs data/log directories (`~/Library/Application
+# Support/Hranix Shield/...` etc., see `server/app/config.py`'s A-19
+# `_packaged_data_dir()`/`_packaged_log_dir()`) instead of the Docker-only
+# `/monitored/*` paths from Decision #2.
+#
+# Publishing 1514 (the ongoing agent<->manager data channel) and 1515
+# (`authd`, one-time enrollment) to **127.0.0.1 only** — never `0.0.0.0` —
+# is the exact same "loopback-only, no LAN exposure" reasoning already
+# applied to port 55000 above: traffic reachable only from a process on
+# THIS SAME machine, never over the network. The only realistic client of
+# these two ports is the Wazuh agent this project's own native installer
+# puts on this same host (see `packaging/*/`) — a stranger on the LAN still
+# cannot reach either port, exactly as they could not reach 55000 before.
+# This does not reopen the risk Decision #1 was guarding against (an
+# internet-reachable enrollment port letting anyone register a rogue
+# agent) — that risk is about *network* exposure, which loopback-only
+# binding still forecloses entirely.
+# `config/ossec.conf`'s `<auth>` block already defaults to enabled
+# (confirmed live before this change — see that file's own header comment,
+# now updated to match) — no manager config file changes were needed for
+# this revision, only this compose file's `ports:` list below.
 #
 # ---------------------------------------------------------------------------
 # Implementation details confirmed empirically while building this task
@@ -141,10 +180,16 @@ services:
       - hranix-security-net
     ports:
       # Bound to 127.0.0.1 only, same "localhost by default" convention as
-      # infra/security/crowdsec/docker-compose.yml. No 1514/1515/514/1516 —
-      # see the host-safety checklist above for why those are deliberately
-      # not published at all.
+      # infra/security/crowdsec/docker-compose.yml. 514/1516 remain
+      # deliberately unpublished — see the host-safety checklist above.
       - "127.0.0.1:55000:55000"
+      # A-25 (Decision #3, 2026-07-18): agent<->manager data channel and
+      # authd enrollment, published for the first time — see Decision #3
+      # above for the full rationale (loopback-only, same reasoning as
+      # 55000, now serving a real native-installer agent instead of
+      # nothing).
+      - "127.0.0.1:1514:1514"
+      - "127.0.0.1:1515:1515"
     environment:
       # Sets/updates this manager's own REST API user on every startup (the
       # image's own `create_user.py`, run by its entrypoint whenever both

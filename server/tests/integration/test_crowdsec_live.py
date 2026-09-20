@@ -24,7 +24,12 @@ import os
 
 import pytest
 
-from app.services.mcp.security_connectors.crowdsec import CrowdSecClient, CrowdSecError
+from app.config import Settings
+from app.services.mcp.security_connectors.crowdsec import (
+    CrowdSecClient,
+    CrowdSecError,
+    fetch_ids_console_data,
+)
 
 
 def _live_client() -> CrowdSecClient | None:
@@ -64,6 +69,43 @@ async def test_live_crowdsec_decisions_match_a_direct_lapi_call():
         assert "value" in decision
         assert "scenario" in decision
         assert "type" in decision
+
+
+@pytest.mark.crowdsec_live
+async def test_live_ids_console_local_community_split_matches_a_direct_lapi_call():
+    """A-23 DoD: the console's `active_bans_local`/`active_bans_community`
+    must match what a fresh direct LAPI call (via the same `CrowdSecClient`,
+    not `cscli`) computes by the exact same `origin != "CAPI"` rule — see
+    crowdsec.py's "A-23 addendum" docstring for why `origin` (not `scope=`/
+    `type=`/`origin=` query params, none of which filter this endpoint) is
+    the right field to split on."""
+    client = _live_client()
+    if client is None:
+        pytest.skip("CROWDSEC_LAPI_URL/CROWDSEC_API_KEY not set — no live CrowdSec configured")
+
+    try:
+        decisions = await client.get_decisions()
+    except CrowdSecError as exc:
+        pytest.skip(f"CrowdSec not reachable/authorized: {exc}")
+    finally:
+        await client.aclose()
+
+    expected_community = sum(1 for d in decisions if d.get("origin") == "CAPI")
+    expected_local = len(decisions) - expected_community
+
+    settings = Settings(
+        crowdsec_lapi_url=os.environ["CROWDSEC_LAPI_URL"],
+        crowdsec_api_key=os.environ["CROWDSEC_API_KEY"],
+    )
+    result = await fetch_ids_console_data(settings)
+
+    assert result["connector"]["status"] == "ok"
+    assert result["metrics"]["active_bans_local"] == expected_local
+    assert result["metrics"]["active_bans_community"] == expected_community
+    assert result["metrics"]["active_bans"] == len(decisions)
+    # recent_attempts must contain exactly the local decisions, none of the
+    # community-blocklist ones.
+    assert len(result["recent_attempts"]) == expected_local
 
 
 @pytest.mark.crowdsec_live

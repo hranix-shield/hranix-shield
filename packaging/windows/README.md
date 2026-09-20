@@ -86,31 +86,73 @@ MIT/Apache/BSD, как остальные пакующие зависимост�
    локалью этого раннера** (`test/check_tray_locale.py`, см. "Кириллица в трее" ниже) — до сборки
    PyInstaller-бандла, чтобы упасть быстро и дёшево, если сама библиотека трея не заведётся на этом
    раннере вообще.
-4. `pyinstaller packaging/windows/hranix-shield.spec --distpath packaging/windows/dist
-   --workpath packaging/windows/build --noconfirm` → `packaging/windows/dist/Hranix Shield/`.
-5. Находит (или ставит через choco, если раннер вдруг без него) `ISCC.exe`, компилирует
+4. **(A-24) Вшивает osquery**: скачивает официальный `osquery-5.23.1.msi`, проверяет его sha256,
+   извлекает `osqueryi.exe` через `msiexec /a ... /qn TARGETDIR=...` (административная установка —
+   без реальной инсталляции в систему раннера), кладёт в
+   `packaging\windows\vendor\osquery\osqueryi.exe`, и сразу проверяет, что извлечённый файл реально
+   запускается и отвечает на настоящий JSON-запрос — см. "osquery включён из коробки" ниже.
+5. `pyinstaller packaging/windows/hranix-shield.spec --distpath packaging/windows/dist
+   --workpath packaging/windows/build --noconfirm` → `packaging/windows/dist/Hranix Shield/`
+   (включая вшитый `vendor/osquery/osqueryi.exe` из шага 4, см. `hranix-shield.spec`'s
+   `datas=[...]`).
+6. Находит (или ставит через choco, если раннер вдруг без него) `ISCC.exe`, компилирует
    `installer.iss` → `packaging/windows/dist/installer/hranix-shield-setup.exe`.
-6. Пишет `config.env` с bootstrap-админом в `%LOCALAPPDATA%\Hranix\Hranix Shield\config.env`
+7. Пишет `config.env` с bootstrap-админом в `%LOCALAPPDATA%\Hranix\Hranix Shield\config.env`
    (см. ниже "Первый запуск") **до** первого запуска установленного бинарника.
-7. Ставит `.exe`-инсталлятор тихо: `/VERYSILENT /SUPPRESSMSGBOX /NORESTART`.
-8. Запускает установленный `Hranix Shield.exe` отдельным шагом, поллит `/health` до 200
+8. Ставит `.exe`-инсталлятор тихо: `/VERYSILENT /SUPPRESSMSGBOX /NORESTART`.
+9. Запускает установленный `Hranix Shield.exe` отдельным шагом, поллит `/health` до 200
    (таймаут 60с, не `sleep`).
-9. Проверяет вход под bootstrap-админом: `POST /auth/login` → реальный JWT в ответе.
-10. **Сверяет консоль «Периметр» с `netsh advfirewall show allprofiles` этой же машины** — тот же
+10. Проверяет вход под bootstrap-админом: `POST /auth/login` → реальный JWT в ответе.
+11. **Сверяет консоль «Периметр» с `netsh advfirewall show allprofiles` этой же машины** — тот же
     протокол, что архитектор просил ("сравнить ответ `GET /security/consoles/perimeter` с `netsh
     advfirewall show allprofiles state` на самом раннере"): шаг запускает ровно ту же команду,
     что и сам коннектор (`os_firewall.py`'s `_windows_firewall_active()`), парсит `State ON/OFF` по
     профилям и падает, если API отвечает не так же, как реальный `netsh` этой машины — но только
     когда `connector.status == "ok"` (иначе это другая, отдельно фиксируемая находка, не повод
     молча пропускать проверку **и** не повод её проваливать).
-11. Останавливает процесс (`Stop-Process -Force` — жёсткое завершение, НЕ проверка
+12. **(A-24) Сверяет консоли «Сеть»/«Вирусная активность» с прямым вызовом вшитого
+    `osqueryi.exe`** — в отличие от шага 11, здесь `connector.status == "ok"` утверждается БЕЗ
+    условия (после A-24 у раннера нет честной причины отвечать иначе), и дополнительно сравнивает
+    `osquery_process_count` консоли `av` с прямым вызовом того же самого вшитого бинарника
+    (допуская обычный дрейф числа процессов между двумя неодновременными снимками, не требуя
+    побайтового совпадения) — см. "osquery включён из коробки" ниже.
+13. Останавливает процесс (`Stop-Process -Force` — жёсткое завершение, НЕ проверка
     graceful-shutdown; A-22's Linux-проверка `systemctl stop` → SIGTERM → `handle.stop()` не имеет
     прямого аналога здесь: у tray-приложения нет удалённо вызываемого "нажать Выход" из CI-скрипта,
     и у Windows GUI-процессов нет SIGTERM-эквивалента, который можно послать снаружи так же, как
     `kill`/`systemctl stop` на Linux — честно не заявляется как эквивалентная проверка).
-12. Загружает собранный установщик как workflow-артефакт.
+14. Загружает собранный установщик как workflow-артефакт.
 
 Полный текст: [`.github/workflows/windows-build.yml`](../../.github/workflows/windows-build.yml).
+
+## osquery включён в установку из коробки (A-24)
+
+Консоли **«Сеть»** и **«Вирусная активность»** (osquery-часть) должны работать сразу после
+установки — конечному пользователю не нужно самому ставить MSI с
+osquery.io/downloads/official/ (`infra/security/osquery/README.md`'s инструкция остаётся
+fallback-документацией для Docker/venv-режима разработки). Написано и синтаксически
+провалидировано (`actionlint` — ноль замечаний по обновлённому workflow), но **НЕ проверено
+живьём в этой сессии** — та же честная граница, что и у всего остального в этом каталоге (нет
+доступа к реальной Windows-машине/GitHub Actions отсюда, см. DoD ниже).
+
+**Как это устроено:** workflow'а собственный шаг "Vendor osquery" скачивает официальный
+`osquery-5.23.1.msi`, сверяет его sha256, извлекает содержимое через `msiexec /a osquery.msi /qn
+TARGETDIR=...` (административная установка — стандартный Windows-приём получить файлы MSI без
+реальной установки в систему) и копирует `osqueryi.exe` в
+`packaging\windows\vendor\osquery\osqueryi.exe`. В отличие от macOS/Linux, официальный Windows
+MSI хранит `osqueryi.exe` как отдельный, самостоятельный PE32+-файл (не символическую
+ссылку/переименованную копию `osqueryd.exe` — оба реально разные файлы) — подтверждено на этой
+macOS-машине разработки независимым инструментом `msitools`' `msiextract` (не самим `msiexec`,
+которого на macOS нет; окончательное доказательство даст только реальный прогон на
+`windows-latest`, см. DoD), поэтому шаг для Windows проще, чем macOS-скрипт: не нужно ни
+переименование, ни ad hoc-codesign — Windows не требует подписи для запуска локального `.exe`.
+
+`hranix-shield.spec` подключает `vendor/osquery/osqueryi.exe` через `datas=[...]` (та же
+логика/комментарий, что в macOS/Linux-спеках); `installer.iss`'s единственная строка `[Files]`
+(рекурсивный wildcard по всему `dist\Hranix Shield\`) уже покрывает его без отдельной записи.
+`osquery.py`'s `_resolve_osqueryi()` (A-24) ищет вшитый `osqueryi.exe` по тому же пути
+(`sys._MEIPASS\vendor\osquery\osqueryi.exe`) на `sys.platform == "win32"`, падая обратно на
+`osqueryi`/`PATH` при его отсутствии — то же поведение, что и на двух других ОС.
 
 ### Почему `%LOCALAPPDATA%`, не `%APPDATA%`
 
@@ -184,6 +226,42 @@ CI не могут это подтвердить — честно зафикси
 `{userstartup}` (`shell:startup`, per-user, без прав администратора). Не входит в жёсткий DoD (см.
 план-спецификацию: "автозапуск... опционально"), но предложен, как и просил архитектор.
 
+## A-25: официальный агент Wazuh (GPLv2) — опциональный `[Run]`-шаг
+
+Тот же архитектурный разрыв, что решают A-20 (macOS)/A-22 (Linux): консоль «Журналы ОС» видит
+файлы только Manager-контейнера (`infra/security/wazuh/docker-compose.yml`'s Decision #2), не
+реальный хост нативной установки. `installer.iss` теперь предлагает необязательный чекбокс
+«Установить агент Wazuh...» (`[Tasks]`'s `wazuhagent`, снят по умолчанию — тот же принцип, что и
+`startupicon` выше: ничего постоянное/системное не ставится без явного согласия). При выборе —
+`[Run]`'s `msiexec.exe /i ... /qn WAZUH_MANAGER="127.0.0.1" WAZUH_REGISTRATION_SERVER="127.0.0.1"`
+(официальные MSI-параметры, см. documentation.wazuh.com, сверено 2026-07-18) молча ставит и
+энролит агент против этой же машины (`infra/security/wazuh/docker-compose.yml`'s Decision #3,
+2026-07-18 — порты 1514/1515 теперь опубликованы на `127.0.0.1`).
+
+MSI **не хранится в git** — `.github/workflows/windows-build.yml` скачивает его с
+`packages.wazuh.com` перед компиляцией `.iss` (см. `.gitignore`'s `packaging/windows/vendor/`),
+версия зафиксирована на `4.14.6` — та же версия, что образ Manager'а
+(`wazuh/wazuh-manager:4.14.6`) и macOS-агент (`packaging/macos/wazuh_agent_setup.py`'s
+`AGENT_VERSION`) — Wazuh сам рекомендует совпадение версий агент/manager.
+
+**Честный, не скрытый пробел (принцип 7):** в отличие от macOS (`wazuh_agent_setup.py`)/Linux
+(`debian/postinst`), этот Windows-путь **не** правит собственный `ossec.conf` агента (`C:\Program
+Files (x86)\ossec-agent\ossec.conf`), чтобы направить `<syscheck><directories>` на реальный
+platformdirs-каталог данных (`%LOCALAPPDATA%\Hranix\Hranix Shield`) — такая правка потребовала бы
+встроенного PowerShell-скрипта в `[Run]`/Pascal Script в `[Code]`, ни то ни другое не проверено
+живьём в этой сессии (нет Windows-машины), и рисковать неверифицированной правкой чужого
+конфиг-файла на реальной машине пользователя хуже, чем честно оставить это следующим шагом —
+задокументировано как открытый пробел в `installer.iss`'s собственном комментарии, не молча
+пропущено.
+
+CI (`.github/workflows/windows-build.yml`) явно выбирает `wazuhagent`-задачу через ISCC's
+`/TASKS="wazuhagent"` (чекбокс снят по умолчанию для реального пользователя, но этот CI-прогон
+должен реально проверить именно этот новый шаг, а не молча его пропустить) и проверяет, что после
+установки существует реальная Windows-служба `WazuhSvc` (`Get-Service WazuhSvc`) — но **не**
+проверяет, что энролмент против реального Manager'а успешен: у `windows-latest`-раннера физически
+нет маршрута к `infra/security/wazuh/docker-compose.yml` (тот контейнер существует только на
+машине разработчика) — залогировано, не проверено как факт (принцип 8).
+
 ## SmartScreen: «незнакомое приложение»
 
 Установщик и сам `.exe` **не подписаны** (Authenticode code signing — осознанно вне скоупа Фазы 0,
@@ -203,6 +281,8 @@ Windows SmartScreen покажет предупреждение «Windows защ
 | **`infi.systray`** | **0.1.12.1** | **BSD-3-Clause** — соответствует лицензионному гейту CLAUDE.md напрямую (MIT/Apache/BSD), без LGPL-исключений, в отличие от изначально использованного `pystray` (см. "Замена библиотеки трея" выше) | Два независимых источника, 2026-07-18: (1) `infi.systray-0.1.12.1`'s собственные PyPI `METADATA` (`License: BSD`, `Classifier: License :: OSI Approved :: BSD License`); (2) `Infinidat/infi.systray`'s GitHub-репозиторий (ветка `develop`), собственный файл `LICENSE` — BSD 3-Clause, copyright INFINIDAT 2017; собственный лицензионный детектор GitHub независимо подтверждает «BSD-3-Clause license» |
 | Pillow | 12.3.0 | MIT-CMU (современный SPDX-идентификатор для того, что раньше называли HPND) | `pillow-12.3.0`'s собственные `METADATA`/`LICENSE`, скачано с PyPI 2026-07-18 — **всё ещё нужна** после замены библиотеки трея, см. "Замена библиотеки трея" выше (роль изменилась: теперь пишет `.ico`-файл на диск, а не отдаёт изображение в памяти) |
 | Inno Setup (`ISCC.exe`) | версия, предустановленная на `windows-latest`-образе (не зафиксирована — раннер сам её выбирает; см. воркфлоу's fallback на `choco install innosetup`, если её вдруг не окажется) | Inno Setup License (permissive, zlib/libpng-семейство, SPDX `InnoSetup`) — свободно для коммерческого использования, начиная с 6.5.0 разработчики **просят** (не требуют по лицензии) добровольную покупку коммерческой лицензии | https://jrsoftware.org/files/is/license.txt, https://spdx.org/licenses/InnoSetup.html — используется только как build-time инструмент (компилятор `.iss` → `.exe`), не линкуется в продукт, тот же принцип, что уже применён к PyInstaller/dpkg-deb/systemd |
+| **osquery** (вшитый `osqueryi.exe`, A-24) | **5.23.1** | Dual-licensed **Apache-2.0 OR GPL-2.0-only** (`SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only`) — проект выбирает **Apache-2.0** | `https://github.com/osquery/osquery/blob/5.23.1/LICENSE` (сверено 2026-07-18); скачано с `https://github.com/osquery/osquery/releases/download/5.23.1/osquery-5.23.1.msi`, `sha256:bb3adc9f32f257147855404d24bceebcd8baf6e65f4d4ca43e186f4a85fa6ed3` — точная версия/ссылка/сумма зафиксированы в `.github/workflows/windows-build.yml`'s "Vendor osquery" шаге |
+| Wazuh agent (Windows `.msi`) | 4.14.6 | GPLv2 (тот же класс, что уже принят для Wazuh Manager/ClamAV/macOS-Linux-агентов, CLAUDE.md's лицензионный гейт) | documentation.wazuh.com, сверено 2026-07-18 (A-25) — внешняя, отдельно работающая Windows-служба (`WazuhSvc`), никогда не линкуется в `server`/установленный `.exe` — опциональный `[Run]`-шаг устанавливает уже официально собранный/подписанный Wazuh-производителем MSI как есть |
 
 ### Примечание к таблице: почему `pystray` больше не в ней
 
@@ -267,7 +347,27 @@ Windows SmartScreen покажет предупреждение «Windows защ
 не трогает `server/app/`, `server/launcher.py` или `server/app/config.py` — только добавляет
 `packaging/windows/*`, дописывает `server/requirements-packaged.txt` (только для Windows, через
 `sys_platform == "win32"`, не затрагивает non-Windows разрешение зависимостей вообще) и добавляет
-`.github/workflows/windows-build.yml`.
+`.github/workflows/windows-build.yml`. (A-24's собственный полный прогон всего сьюта после
+добавления osquery-резолвера зафиксирован в `server/tests/unit/test_osquery_connector.py`'s
+изменениях и в отчёте задачи A-24, не переоткрывается здесь отдельной цифрой.)
+
+### 6. (A-24) osquery вшит в спеку/CI — написано и синтаксически провалидировано, реальный прогон НЕ произошёл
+
+`hranix-shield.spec`'s новая `VENDOR_OSQUERYI`-проверка + `datas=[...]`-строка, и
+`.github/workflows/windows-build.yml`'s новые шаги "Vendor osquery" и "Compare the
+"Сеть"/"Вирусная активность" консоли..." — написаны по документированному поведению
+`msiexec /a` (административная установка MSI) и проверены синтаксически (`actionlint` — ноль
+замечаний по обновлённому файлу, включая оба новых шага; `python3 -c "import yaml;
+yaml.safe_load(...)"` — парсится). MSI-инструмент выбора имени файла `osqueryi.exe` внутри
+пакета (отдельный PE32+-файл, не переименование `osqueryd.exe`, в отличие от macOS/Linux)
+подтверждён на этой macOS-машине через независимый opensource-инструмент `msitools`'
+`msiextract` (установлен через `brew install msitools`, версия 0.106) — это НЕ то же самое, что
+реальный `msiexec.exe` на настоящей Windows, но даёт разумную уверенность, что
+`Get-ChildItem -Recurse -Filter osqueryi.exe`-подход в воркфлоу найдёт файл независимо от
+точного имени промежуточного каталога административной установки. **Ни один из новых Windows-
+шагов не выполнялся на реальной машине/CI в этой сессии** — тот же честный лимит, что и у всего
+остального в этом каталоге (см. пункт 3 выше). Первое реальное подтверждение — когда архитектор
+запушит этот код и посмотрит на реальный прогон в Actions.
 
 ## Известные ограничения / что честно не сделано
 

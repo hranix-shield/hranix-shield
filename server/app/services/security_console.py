@@ -6,6 +6,7 @@ from enum import StrEnum
 from fastapi import Request
 
 from app.services.mcp.security_connectors.clamav import ClamAvScanJobRegistry
+from app.services.mcp.security_connectors.traffic_counters import TrafficCounterRegistry
 
 
 class ConsoleStatus(StrEnum):
@@ -124,3 +125,11 @@ def get_clamav_scan_job_registry(request: Request) -> ClamAvScanJobRegistry:
     same mirror-of-get_health_registry shape as
     `get_security_console_registry` above."""
     return request.app.state.clamav_scan_job_registry
+
+
+def get_traffic_counter_registry(request: Request) -> TrafficCounterRegistry:
+    """FastAPI dependency: the A-39 per-process traffic-counter baseline
+    instance attached to this app (see app_factory.create_app ->
+    app.state.traffic_counter_registry), same mirror-of-get_health_registry
+    shape as `get_clamav_scan_job_registry` above."""
+    return request.app.state.traffic_counter_registry

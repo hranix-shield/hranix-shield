@@ -50,6 +50,12 @@ class FakeClamd:
             writer.write(b"PONG\0")
         elif command == "zVERSION":
             writer.write(self.version.encode() + b"\0")
+        elif command == "zRELOAD":
+            # A-27: live-confirmed against the real hranix-clamav container
+            # (see clamav.py's ClamdClient.reload docstring) — `RELOAD`
+            # answers exactly `b"RELOADING\0"`, same one-line-ack shape
+            # PING/PONG already has.
+            writer.write(b"RELOADING\0")
         elif command == "zINSTREAM":
             buf = bytearray()
             while True:

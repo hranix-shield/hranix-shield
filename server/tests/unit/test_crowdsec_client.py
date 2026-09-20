@@ -36,7 +36,18 @@ async def test_get_decisions_returns_parsed_list_and_sends_the_api_key_header():
         return httpx.Response(
             200,
             json=[
-                {"id": 1, "value": "198.51.100.23", "scenario": "crowdsecurity/ssh-bf", "type": "ban"},
+                {
+                    "id": 1,
+                    "value": "198.51.100.23",
+                    "scenario": "crowdsecurity/ssh-bf",
+                    "type": "ban",
+                    # A-23: `origin` must pass through unmolested — it is
+                    # how fetch_ids_console_data (test_crowdsec_ids_console_
+                    # data.py) tells a local decision apart from a
+                    # community-blocklist (CAPI) one, downstream of this
+                    # client.
+                    "origin": "cscli",
+                },
             ],
         )
 
@@ -49,7 +60,13 @@ async def test_get_decisions_returns_parsed_list_and_sends_the_api_key_header():
     assert captured["path"] == "/v1/decisions"
     assert captured["api_key"] == "secret-key"
     assert decisions == [
-        {"id": 1, "value": "198.51.100.23", "scenario": "crowdsecurity/ssh-bf", "type": "ban"}
+        {
+            "id": 1,
+            "value": "198.51.100.23",
+            "scenario": "crowdsecurity/ssh-bf",
+            "type": "ban",
+            "origin": "cscli",
+        }
     ]
 
 

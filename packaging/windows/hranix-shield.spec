@@ -59,6 +59,50 @@ from pathlib import Path
 REPO_ROOT = Path(SPECPATH).resolve().parent.parent  # packaging/windows -> packaging -> repo root
 SERVER_DIR = REPO_ROOT / "server"
 
+# A-24: `.github/workflows/windows-build.yml`'s own "Vendor osquery" step
+# must run ONCE before this spec (on the `windows-latest` CI runner — see
+# that workflow and packaging/windows/README.md's "no Windows machine"
+# section for why this can only ever run there, never on this macOS dev
+# checkout). Checked explicitly (same reasoning as the macOS/Linux specs'
+# identical check) so a build attempted without that step first fails with
+# a clear, actionable message instead of a generic PyInstaller "datas"
+# error deep in Analysis.
+VENDOR_OSQUERYI = REPO_ROOT / "packaging" / "windows" / "vendor" / "osquery" / "osqueryi.exe"
+if not VENDOR_OSQUERYI.is_file():
+    raise FileNotFoundError(
+        f"A-24: vendored osqueryi.exe not found at {VENDOR_OSQUERYI} — "
+        "this must be produced by .github/workflows/windows-build.yml's own "
+        "'Vendor osquery' step before this spec builds (see that workflow)."
+    )
+
+# A-40: `.github/workflows/windows-build.yml`'s own "Vendor geoip" step
+# must run ONCE before this spec, same reasoning as VENDOR_OSQUERYI above
+# — the offline IP -> country CSV dataset is plain OS-agnostic data (see
+# geoip.py's module docstring for the full licence research), so that
+# step is a plain download + checksum check, no MSI/binary extraction
+# dance needed the way osquery's own Windows vendoring required.
+VENDOR_GEOIP_DIR = REPO_ROOT / "packaging" / "windows" / "vendor" / "geoip"
+if not (VENDOR_GEOIP_DIR / "user-country-ipv4.csv").is_file():
+    raise FileNotFoundError(
+        f"A-40: vendored geoip dataset not found at {VENDOR_GEOIP_DIR} — "
+        "this must be produced by .github/workflows/windows-build.yml's own "
+        "'Vendor geoip' step before this spec builds (see that workflow)."
+    )
+
+# A-61: vendored restic (BSD-2-Clause — licence-gate-clean, the same
+# "vendored MIT/Apache/BSD binaries are fine" class as osqueryi) — produced
+# by the workflow's own "Vendor restic" step (or the same script run by
+# hand in a local checkout), checked explicitly with the identical
+# fail-early reasoning as VENDOR_OSQUERYI above.
+VENDOR_RESTIC = REPO_ROOT / "packaging" / "windows" / "vendor" / "restic" / "restic.exe"
+if not VENDOR_RESTIC.is_file():
+    raise FileNotFoundError(
+        f"A-61: vendored restic.exe not found at {VENDOR_RESTIC} — "
+        "this must be produced by .github/workflows/windows-build.yml's own "
+        "'Vendor restic' step (packaging/windows/vendor-restic.sh) before "
+        "this spec builds (see that workflow)."
+    )
+
 a = Analysis(
     [str(REPO_ROOT / "packaging" / "windows" / "hranix_shield_tray.py")],
     pathex=[str(SERVER_DIR)],
@@ -80,6 +124,36 @@ a = Analysis(
         # bundled_root()/`_alembic_config()` for the matching read side.
         (str(SERVER_DIR / "alembic"), "alembic"),
         (str(SERVER_DIR / "alembic.ini"), "."),
+        # A-24: vendored `osqueryi.exe` (see the CI workflow's "Vendor
+        # osquery" step) — lands at sys._MEIPASS/vendor/osquery/osqueryi.exe,
+        # exactly where osquery.py's `_vendored_osqueryi_path()` looks for
+        # it in packaged mode on `sys.platform == "win32"`. `datas`, not
+        # `binaries=[...]`, same reasoning as the macOS/Linux specs' rows —
+        # a standalone helper executable invoked only via subprocess, never
+        # `LoadLibrary`'d into this process. Unlike osquery's macOS .pkg,
+        # its Windows MSI ships `osqueryi.exe` as its own genuinely separate
+        # PE32+ file (confirmed by extracting the real MSI with `msitools`
+        # on this dev machine, not assumed — see
+        # .github/workflows/windows-build.yml's own "Vendor osquery" step
+        # comment) — no rename/re-sign step is needed the way macOS's
+        # ad hoc-codesign dance was, Windows has no equivalent bundle-seal
+        # requirement for a plain unsigned .exe run directly.
+        (str(VENDOR_OSQUERYI), "vendor/osquery"),
+        # A-61: vendored `restic.exe` + its BSD-2-Clause LICENSE (see the CI
+        # workflow's "Vendor restic" step) — land at
+        # sys._MEIPASS/vendor/restic/, exactly where
+        # restic_client.py's vendored-first resolver looks for it in
+        # packaged mode. Same "datas, not binaries" shape as osqueryi
+        # above: a standalone helper executable invoked only via
+        # subprocess, never LoadLibrary'd into this process; the LICENSE
+        # ships next to the binary (plan-spec's "LICENSE бинаря — рядом").
+        (str(VENDOR_RESTIC), "vendor/restic"),
+        (str(REPO_ROOT / "packaging" / "windows" / "vendor" / "restic" / "LICENSE"), "vendor/restic"),
+        # A-40: vendored geoip CSV dataset (see the CI workflow's "Vendor
+        # geoip" step) — lands at sys._MEIPASS/vendor/geoip/, exactly where
+        # geoip.py's `_vendored_geoip_dir()` looks for it in packaged mode.
+        # Same "whole directory as SOURCE" shape as app/static above.
+        (str(VENDOR_GEOIP_DIR), "vendor/geoip"),
     ],
     hiddenimports=[
         # Same list as packaging/macos/hranix-shield.spec and

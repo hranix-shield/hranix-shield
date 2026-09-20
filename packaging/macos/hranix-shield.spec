@@ -6,8 +6,9 @@ menu-bar shell), which imports and calls into `server/launcher.py` (the
 OS-agnostic startup sequence shared with the future A-21/A-22 Windows/
 Linux builds — see that module's docstring). This spec's only job is
 getting both of those, plus `app/` and the runtime resources it needs
-(`app/static/`, `alembic.ini`, `alembic/`), correctly onto disk inside a
-`.app` — no business logic lives here.
+(`app/static/`, `alembic.ini`, `alembic/`, and — A-24 — a vendored
+`osqueryi` binary, see `vendor-osquery.sh` and the `datas=[...]` row
+below), correctly onto disk inside a `.app` — no business logic lives here.
 
 **onedir, not onefile** (`COLLECT`+`BUNDLE` below, not a single-file
 `EXE`) — decided empirically while building this task, see
@@ -37,9 +38,45 @@ from pathlib import Path
 REPO_ROOT = Path(SPECPATH).resolve().parent.parent  # packaging/macos -> packaging -> repo root
 SERVER_DIR = REPO_ROOT / "server"
 
+# A-24: `vendor-osquery.sh` (this same directory) must run ONCE before this
+# spec — it downloads the official osquery release and extracts a
+# standalone `osqueryi` binary here. Checked explicitly (not left to
+# PyInstaller's own "datas" error, which is correct but less specific)
+# so a developer who forgot that step gets a clear, actionable message
+# pointing at the exact script to run, not a generic file-not-found deep
+# in PyInstaller's own Analysis phase.
+VENDOR_OSQUERYI = REPO_ROOT / "packaging" / "macos" / "vendor" / "osquery" / "osqueryi"
+if not VENDOR_OSQUERYI.is_file():
+    raise FileNotFoundError(
+        f"A-24: vendored osqueryi binary not found at {VENDOR_OSQUERYI} — "
+        "run packaging/macos/vendor-osquery.sh once before building this spec "
+        "(see that script's own docstring)."
+    )
+
+# A-40: `vendor-geoip.sh` (this same directory) must run ONCE before this
+# spec — it downloads the offline IP -> country CSV dataset. Same explicit
+# check as VENDOR_OSQUERYI above, for the same reason (a clear, actionable
+# message instead of a generic PyInstaller "datas" error).
+VENDOR_GEOIP_DIR = REPO_ROOT / "packaging" / "macos" / "vendor" / "geoip"
+if not (VENDOR_GEOIP_DIR / "user-country-ipv4.csv").is_file():
+    raise FileNotFoundError(
+        f"A-40: vendored geoip dataset not found at {VENDOR_GEOIP_DIR} — "
+        "run packaging/macos/vendor-geoip.sh once before building this spec "
+        "(see that script's own docstring, and geoip.py's module docstring "
+        "for the licence research behind this dataset choice)."
+    )
+
 a = Analysis(
     [str(REPO_ROOT / "packaging" / "macos" / "hranix_shield_app.py")],
-    pathex=[str(SERVER_DIR)],
+    # A-25: packaging/macos itself, so PyInstaller's modulegraph analysis
+    # can resolve `hranix_shield_app.py`'s `from wazuh_agent_setup import
+    # ...` at BUILD time — that sibling module lives in the same
+    # directory as the entry script (unpackaged dev-mode already works
+    # for free: Python auto-prepends a script's own directory to
+    # sys.path), but PyInstaller's static analysis needs it in `pathex`
+    # explicitly, the same reason SERVER_DIR is already here for
+    # `from launcher import ...`.
+    pathex=[str(SERVER_DIR), str(REPO_ROOT / "packaging" / "macos")],
     binaries=[],
     datas=[
         # StaticFiles mount (app_factory.py's STATIC_DIR) reads these as
@@ -56,6 +93,41 @@ a = Analysis(
         # bundled_root()/`_alembic_config()` for the matching read side.
         (str(SERVER_DIR / "alembic"), "alembic"),
         (str(SERVER_DIR / "alembic.ini"), "."),
+        # A-24: vendored `osqueryi` binary (see vendor-osquery.sh above) —
+        # lands at sys._MEIPASS/vendor/osquery/osqueryi, exactly where
+        # osquery.py's `_vendored_osqueryi_path()` looks for it in packaged
+        # mode. Declared as a `datas` row (not `binaries=[...]`): it is not
+        # a Python C-extension shared library some other module `dlopen`s,
+        # which is what `binaries=[...]`'s own dependency bookkeeping is
+        # really for. In practice PyInstaller's Analysis step still
+        # auto-reclassifies it into the same internal "binary" bucket
+        # regardless of which list it was declared under (its own log line
+        # says so: "Performing binary vs. data reclassification" — it
+        # detects the Mach-O magic bytes itself, not this file's origin
+        # list) — confirmed empirically while building this task: the
+        # collected copy (under `Contents/Resources/vendor/osquery/
+        # osqueryi`, a symlink into `Contents/Frameworks/`, the same
+        # macOS-BUNDLE convention every other native binary in this build
+        # already gets) came out THINNED to arm64-only (PyInstaller's own
+        # `--target-arch` conversion, the same step the main `Hranix
+        # Shield` executable goes through) and RE-SIGNED during BUNDLE's
+        # whole-app signing pass, on top of the ad hoc signature
+        # vendor-osquery.sh already applied — belt and suspenders, not a
+        # conflict: `codesign -dv` on the collected copy still shows a
+        # valid ad hoc signature, and it actually runs (`osqueryi
+        # --version` invoked from inside the real built .app) — see the
+        # A-24 task report for the exact commands and output.
+        (str(VENDOR_OSQUERYI), "vendor/osquery"),
+        # A-40: vendored geoip CSV dataset (see vendor-geoip.sh above) —
+        # lands at sys._MEIPASS/vendor/geoip/, exactly where geoip.py's
+        # `_vendored_geoip_dir()` looks for it in packaged mode. A whole
+        # directory as `SOURCE` (not a single file), same shape as
+        # `app/static` above — PyInstaller recursively collects everything
+        # under it, preserving the relative layout `_tables_for_dir()`
+        # expects (`user-country-ipv4.csv`/`user-country-ipv6.csv` sitting
+        # directly inside). Plain data (CSV text), not a Mach-O binary like
+        # VENDOR_OSQUERYI above — no codesign/thinning step applies to it.
+        (str(VENDOR_GEOIP_DIR), "vendor/geoip"),
     ],
     hiddenimports=[
         # uvicorn's "auto" loop/protocol selection (uvicorn[standard],

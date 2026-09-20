@@ -49,6 +49,31 @@ from pathlib import Path
 REPO_ROOT = Path(SPECPATH).resolve().parent.parent  # packaging/linux -> packaging -> repo root
 SERVER_DIR = REPO_ROOT / "server"
 
+# A-24: `vendor-osquery.sh` (this same directory) must run ONCE before this
+# spec — it downloads the official osquery .deb and extracts a standalone
+# `osqueryi` binary here. Checked explicitly (same reasoning as the macOS
+# spec's identical check) so a forgotten build step fails with a clear,
+# actionable message instead of a generic PyInstaller "datas" error.
+VENDOR_OSQUERYI = REPO_ROOT / "packaging" / "linux" / "vendor" / "osquery" / "osqueryi"
+if not VENDOR_OSQUERYI.is_file():
+    raise FileNotFoundError(
+        f"A-24: vendored osqueryi binary not found at {VENDOR_OSQUERYI} — "
+        "run packaging/linux/vendor-osquery.sh once before building this spec "
+        "(see that script's own docstring)."
+    )
+
+# A-40: `vendor-geoip.sh` (this same directory) must run ONCE before this
+# spec — it downloads the offline IP -> country CSV dataset. Same explicit
+# check as VENDOR_OSQUERYI above, same reasoning.
+VENDOR_GEOIP_DIR = REPO_ROOT / "packaging" / "linux" / "vendor" / "geoip"
+if not (VENDOR_GEOIP_DIR / "user-country-ipv4.csv").is_file():
+    raise FileNotFoundError(
+        f"A-40: vendored geoip dataset not found at {VENDOR_GEOIP_DIR} — "
+        "run packaging/linux/vendor-geoip.sh once before building this spec "
+        "(see that script's own docstring, and geoip.py's module docstring "
+        "for the licence research behind this dataset choice)."
+    )
+
 a = Analysis(
     [str(REPO_ROOT / "packaging" / "linux" / "hranix_shield_service.py")],
     pathex=[str(SERVER_DIR)],
@@ -70,6 +95,24 @@ a = Analysis(
         # bundled_root()/`_alembic_config()` for the matching read side.
         (str(SERVER_DIR / "alembic"), "alembic"),
         (str(SERVER_DIR / "alembic.ini"), "."),
+        # A-24: vendored `osqueryi` binary (see vendor-osquery.sh above) —
+        # lands at sys._MEIPASS/vendor/osquery/osqueryi, exactly where
+        # osquery.py's `_vendored_osqueryi_path()` looks for it in packaged
+        # mode. `datas`, not `binaries=[...]`, same reasoning as the macOS
+        # spec's identical row — a standalone helper executable invoked
+        # only via subprocess, not a shared library this process
+        # `dlopen`s. Linux onedir has no `BUNDLE`-style Frameworks/
+        # Resources split (see this file's own module docstring) — the
+        # COLLECT output directory IS `sys._MEIPASS` directly, so this
+        # lands at `<install root>/vendor/osquery/osqueryi` with no
+        # symlink indirection to account for (unlike the macOS spec).
+        (str(VENDOR_OSQUERYI), "vendor/osquery"),
+        # A-40: vendored geoip CSV dataset (see vendor-geoip.sh above) —
+        # lands at sys._MEIPASS/vendor/geoip/, exactly where geoip.py's
+        # `_vendored_geoip_dir()` looks for it in packaged mode. Same
+        # "whole directory as SOURCE" shape as app/static above; plain CSV
+        # text, no codesign/thinning concern like VENDOR_OSQUERYI's binary.
+        (str(VENDOR_GEOIP_DIR), "vendor/geoip"),
     ],
     hiddenimports=[
         # Same list as packaging/macos/hranix-shield.spec, verbatim —

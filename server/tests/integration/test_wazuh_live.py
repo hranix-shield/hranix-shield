@@ -35,6 +35,7 @@ import os
 import time
 import uuid
 
+import httpx
 import pytest
 
 from app.config import REPO_ROOT, Settings
@@ -175,6 +176,69 @@ async def test_live_fetch_logs_console_data_matches_a_direct_manager_call():
 # ---------------------------------------------------------------------------
 # Failure scenario, against a real (if briefly wrong) address
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# A-30: on-demand FIM rescan (`PUT /syscheck`) — the live investigation that
+# found the REAL request shape differs from the Wazuh REST API's own
+# documented one.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.wazuh_live
+async def test_live_the_documented_put_syscheck_agent_id_path_shape_actually_405s():
+    """Pins the actual live finding into the test suite, not just prose:
+    the Wazuh REST API's own reference docs describe `PUT
+    /syscheck/{agent_id}` (agent id as a *path* parameter) as how to trigger
+    an on-demand FIM rescan. Confirmed live against this exact deployed
+    `wazuh/wazuh-manager:4.14.6` container (both for agent "000" and a real
+    enrolled agent) that this literally 405s — this is the reason
+    `WazuhClient.trigger_syscheck()` does NOT use this shape. If a future
+    manager upgrade ever starts supporting it, this assertion will start
+    failing — useful signal that the documented shape has become real,
+    not just historical trivia to keep believing forever."""
+    settings = await _skip_unless_reachable()
+
+    async with httpx.AsyncClient(base_url=settings.wazuh_api_url, timeout=5.0) as raw_client:  # type: ignore[arg-type]
+        auth_response = await raw_client.post(
+            "/security/user/authenticate",
+            params={"raw": "true"},
+            auth=(settings.wazuh_api_username, settings.wazuh_api_password),  # type: ignore[arg-type]
+        )
+        token = auth_response.text.strip()
+
+        response = await raw_client.put(
+            f"/syscheck/{os.environ.get('WAZUH_AGENT_ID', '000')}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 405
+
+
+@pytest.mark.wazuh_live
+async def test_live_trigger_syscheck_uses_the_real_query_param_shape_and_succeeds():
+    """The real, live-confirmed shape (`PUT /syscheck?agents_list=<id>`) —
+    what `WazuhClient.trigger_syscheck()` actually sends. Confirms a real
+    HTTP 200 from the real manager and that the configured agent id (see
+    `WAZUH_AGENT_ID` — "000", the manager's own built-in agent, unless a
+    real enrolled agent id is set, e.g. "003" on a dev machine with a native
+    macOS agent installed per A-25) is reported back in `affected_items`."""
+    settings = await _skip_unless_reachable()
+    agent_id = os.environ.get("WAZUH_AGENT_ID", "000")
+    client = WazuhClient(
+        api_url=settings.wazuh_api_url,  # type: ignore[arg-type]
+        username=settings.wazuh_api_username,  # type: ignore[arg-type]
+        password=settings.wazuh_api_password,  # type: ignore[arg-type]
+        agent_id=agent_id,
+        timeout=5.0,
+    )
+
+    try:
+        affected = await client.trigger_syscheck()
+    finally:
+        await client.aclose()
+
+    assert agent_id in affected
 
 
 @pytest.mark.wazuh_live

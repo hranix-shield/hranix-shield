@@ -14,6 +14,7 @@ confident `False` on Linux, only `True` or `not_configured`.
 
 from __future__ import annotations
 
+import json
 import logging
 import platform
 import re
@@ -78,28 +79,81 @@ async def _macos_disk_encryption_active() -> bool:
     raise OSDiskEncryptionError("could not parse fdesetup status output", reason="unreachable")
 
 
-async def _windows_disk_encryption_active() -> bool:
-    """`manage-bde -status` lists every volume with a `Protection Status`
-    line (`Protection On` / `Protection Off`). Reported as active when at
-    least one volume is protected — this product targets single-disk
-    laptops, so "the disk" reads as "any volume this call can see".
+async def _windows_powershell_output(command: str, *, timeout: float = 15.0) -> str:
+    """Run a read-only PowerShell one-liner and return its stdout — the
+    locale-proof Windows data path (mirrors `os_firewall.py`'s helper of
+    the same name: netsh/manage-bde text is MUI-localized, so A-18's
+    documented-text parse silently only ever worked on en-US; caught live
+    on a real ru-RU host, 2026-09-19 Windows acceptance).
 
-    Not verified against a real Windows host while building this task (dev
-    machine is macOS) — implemented from documented `manage-bde` output;
-    flagged in the task report as a verify-on-Windows follow-up, same
-    caveat as `os_firewall.py`'s Windows path.
+    Same `[Console]::OutputEncoding` UTF-8 prefix as there: a localized
+    host otherwise writes denial messages in the legacy OEM codepage
+    (cp866 on ru-RU, confirmed live) and `run_local_command`'s UTF-8
+    decode turns them into mush no permission marker can match.
+
+    The BitLocker CIM denial for a non-elevated user is measurably slow
+    (the CIM query itself must time out server-side before the error is
+    formatted — well over 5s observed live), hence the generous default.
     """
-    returncode, stdout, stderr = await _run("manage-bde", "-status")
+    try:
+        returncode, stdout, stderr = await run_local_command(
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; " + command,
+            timeout=timeout,
+        )
+    except LocalCommandNotFound as exc:
+        raise OSDiskEncryptionError(str(exc), reason="not_configured") from exc
+    except LocalCommandTimedOut as exc:
+        raise OSDiskEncryptionError(f"powershell timed out after {timeout}s", reason="unreachable") from exc
     combined = f"{stdout}\n{stderr}"
     if looks_like_permission_denied(combined):
-        raise OSDiskEncryptionError("manage-bde -status requires elevated privileges", reason="permission_denied")
+        raise OSDiskEncryptionError("PowerShell query requires elevated privileges", reason="permission_denied")
     if returncode != 0:
-        raise OSDiskEncryptionError(f"manage-bde -status exited {returncode}: {stderr.strip()}", reason="unreachable")
-    if re.search(r"protection status:\s*protection on", combined, flags=re.IGNORECASE):
+        raise OSDiskEncryptionError(f"powershell exited {returncode}: {stderr.strip()}", reason="unreachable")
+    return stdout
+
+
+async def _windows_disk_encryption_active() -> bool:
+    """`Get-BitLockerVolume` (CIM, via `_windows_powershell_output`) —
+    at least one volume with `ProtectionStatus` `"On"` reads as active:
+    this product targets single-disk laptops, so "the disk" reads as "any
+    volume this call can see". Same semantics as the original A-18
+    `manage-bde -status` text parse, now locale-proof (the «Protection
+    Status: Protection On» text it parsed only exists on en-US — ru-RU
+    prints «Состояние защиты»).
+
+    Requires an elevated token — confirmed live on a real Windows host
+    (2026-09-19): a non-elevated administrator-group user is denied at the
+    CIM layer (`Get-CimInstance: Отказано в доступе`), so the console's
+    honest `permission_denied` state is the expected steady state for a
+    non-elevated tray run; a console refresh deliberately never triggers
+    an elevation prompt (same policy as every other read).
+    """
+    stdout = await _windows_powershell_output(
+        "Get-BitLockerVolume | Select-Object MountPoint,ProtectionStatus | ConvertTo-Json -Compress",
+        timeout=45.0,
+    )
+    try:
+        volumes = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise OSDiskEncryptionError(
+            f"could not parse Get-BitLockerVolume output: {stdout.strip()[:200]!r}", reason="unreachable"
+        ) from exc
+    if isinstance(volumes, dict):
+        volumes = [volumes]
+    statuses = [str(volume.get("ProtectionStatus", "")).strip().lower() for volume in volumes]
+    if not statuses:
+        raise OSDiskEncryptionError("Get-BitLockerVolume returned no volumes", reason="unreachable")
+    if any(status == "on" for status in statuses):
         return True
-    if re.search(r"protection status:\s*protection off", combined, flags=re.IGNORECASE):
+    if all(status == "off" for status in statuses):
         return False
-    raise OSDiskEncryptionError("could not parse manage-bde -status output", reason="unreachable")
+    raise OSDiskEncryptionError(
+        f"unrecognized ProtectionStatus values: {statuses!r}", reason="unreachable"
+    )
 
 
 async def _linux_disk_encryption_active() -> bool:

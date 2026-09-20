@@ -19,6 +19,11 @@ Sequence (`launch()`):
      `_ensure_data_directories()` — a genuinely clean `platformdirs` data
      dir has nothing in it yet, unlike a source checkout's
      `server/data/.gitkeep` or the Docker image's own `mkdir -p`).
+  1.5. raise this process's own soft `RLIMIT_NOFILE` (see
+     `_raise_open_file_limit()` — A-46) — launchd-launched GUI processes
+     default far lower than a terminal shell, low enough to run a real
+     scan straight into it and freeze the whole server, not just that one
+     request.
   2. apply pending migrations *programmatically* — `alembic.command.upgrade`
      in-process, never `subprocess`/`python -m alembic`: a frozen
      PyInstaller binary has no separate interpreter+`alembic` console
@@ -47,6 +52,7 @@ import urllib.request
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 from alembic import command
@@ -56,6 +62,80 @@ from app.app_factory import create_app
 from app.config import REPO_ROOT, Settings, get_settings, is_packaged
 
 logger = logging.getLogger(__name__)
+
+# A-46: real bug found live (2026-08-03) — see
+# docs/план-спецификация-фаза-0-лимит-открытых-файлов-2026-08-16.md for the
+# full diagnosis (proved 4 independent ways in that doc). Short version:
+# `launchd`-launched GUI processes (the packaged `.app`, opened via `open`
+# rather than a terminal) default to a soft `RLIMIT_NOFILE` of 256 on
+# macOS — confirmed live via `launchctl limit maxfiles`. This app already
+# holds ~110 file descriptors at rest, and `ClamdClient` (see
+# services/mcp/security_connectors/clamav.py's own docstring) deliberately
+# opens a fresh TCP connection per file it scans — a custom/full scan over
+# enough files runs the process straight into that ceiling. Because
+# `uvicorn` here runs one worker on one asyncio event loop (see
+# `_start_server`'s own docstring), that is not just a slow scan request:
+# the whole server stops answering ANYTHING, including `/health`, until
+# the request is killed. 10240 is a generous, unremarkable industry-
+# standard target (same order of magnitude as common Docker/Elasticsearch/
+# nginx `worker_rlimit_nofile` defaults), not a maximum this app is
+# expected to ever approach.
+_DESIRED_NOFILE_SOFT_LIMIT = 10240
+
+
+def _raise_open_file_limit(*, resource_module: Any | None = None) -> None:
+    """Raises this process's own soft `RLIMIT_NOFILE` toward
+    `_DESIRED_NOFILE_SOFT_LIMIT` — see the module-level comment above for
+    why. `resource_module` is the same test-injection seam every other
+    swappable dependency in this codebase already uses (defaults to the
+    real stdlib `resource` module); a unit test passes a fake object with
+    `RLIMIT_NOFILE`/`RLIM_INFINITY`/`getrlimit`/`setrlimit` instead.
+
+    POSIX-only: the stdlib `resource` module does not exist on Windows at
+    all, so the import itself must stay inside this function (never at
+    module level, or importing `launcher` at all would crash on Windows).
+    Not a proven-necessary fix there either — Windows sockets go through
+    Winsock's own handle table, not the same small CRT file-descriptor
+    limit `msvcrt.setmaxstdio` raises, so there is no live-reproduced
+    reason to believe the same failure mode applies (see the A-46
+    план-спецификация's «Что сознательно не делаем» section). A silent,
+    intentional no-op there, not an oversight.
+
+    Never raises: a failure to raise the limit (or a platform where this
+    is a no-op) is logged and left as a smaller-than-ideal limit, the same
+    honest-degradation shape `launch()`'s own `healthy=False` path already
+    uses elsewhere in this module — this must never be the reason the
+    whole app fails to start.
+    """
+    if sys.platform == "win32":
+        return
+    if resource_module is None:
+        import resource as resource_module
+
+    soft, hard = resource_module.getrlimit(resource_module.RLIMIT_NOFILE)
+    if soft >= _DESIRED_NOFILE_SOFT_LIMIT:
+        return
+    # macOS-known quirk: `hard` can come back as `RLIM_INFINITY` (a huge
+    # sentinel), which `setrlimit` does not reliably accept back as a raw
+    # value — substitute a concrete number in that case instead.
+    target = (
+        _DESIRED_NOFILE_SOFT_LIMIT
+        if hard == resource_module.RLIM_INFINITY
+        else min(_DESIRED_NOFILE_SOFT_LIMIT, hard)
+    )
+    try:
+        resource_module.setrlimit(resource_module.RLIMIT_NOFILE, (target, hard))
+    except (ValueError, OSError):
+        logger.warning(
+            "launcher: could not raise RLIMIT_NOFILE soft limit from %d toward "
+            "%d (hard=%s) — continuing with the current limit; a large scan may "
+            "hit connection errors under file-descriptor pressure",
+            soft,
+            target,
+            hard,
+        )
+        return
+    logger.info("launcher: raised RLIMIT_NOFILE soft limit from %d to %d", soft, target)
 
 
 def bundled_root() -> Path:
@@ -242,6 +322,7 @@ def launch(*, open_browser: bool = True, health_timeout: float = 10.0) -> Launch
     hasn't started yet.
     """
     settings = get_settings()
+    _raise_open_file_limit()
     _ensure_data_directories(settings)
     run_migrations()
     server, thread = _start_server(settings)

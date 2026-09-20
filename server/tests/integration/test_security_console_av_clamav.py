@@ -27,6 +27,8 @@ osquery's.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -35,7 +37,10 @@ import app.routers.security_console as security_console_module
 from app.services.mcp.security_connectors.clamav import (
     ClamAvNotConfiguredError,
     ClamAvPathNotAllowedError,
+    ClamAvQuarantineNotFoundError,
+    ClamAvRestoreConflictError,
     ClamdError,
+    QuarantineEntry,
     ScanJob,
 )
 from tests.common.factories import create_user
@@ -152,6 +157,234 @@ async def test_quick_scan_returns_503_when_clamd_unreachable(
 
     assert response.status_code == 503
     assert response.json()["detail"] == {"error": "clamav_unreachable"}
+
+
+# ---------------------------------------------------------------------------
+# A-33: POST /security/consoles/av/clamav/scan/custom
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_custom_scan_returns_a_completed_job_with_the_scanned_path(
+    client: TestClient,
+    migrated_session_maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def _fake_run_custom_scan(path, **kwargs):
+        return {"scanned_count": 4, "infected": [], "path": str(path)}
+
+    monkeypatch.setattr(security_console_module, "run_custom_scan", _fake_run_custom_scan)
+    headers = await _admin_headers(client, migrated_session_maker, "custom_scan_admin")
+
+    response = client.post(
+        "/security/consoles/av/clamav/scan/custom",
+        json={"path": "/home/user/Downloads/project"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["kind"] == "custom"
+    assert body["status"] == "completed"
+    assert body["scanned_count"] == 4
+    assert body["infected"] == []
+    assert body["path"] == "/home/user/Downloads/project"
+
+
+@pytest.mark.integration
+@pytest.mark.integration
+async def test_custom_scan_returns_404_for_a_missing_path(
+    client: TestClient,
+    migrated_session_maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def _raise_not_found(path, **kwargs):
+        raise FileNotFoundError(str(path))
+
+    monkeypatch.setattr(security_console_module, "run_custom_scan", _raise_not_found)
+    headers = await _admin_headers(client, migrated_session_maker, "custom_scan_admin_404")
+
+    response = client.post(
+        "/security/consoles/av/clamav/scan/custom",
+        json={"path": "/home/user/Downloads/does-not-exist"},
+        headers=headers,
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == {"error": "scan_path_not_found"}
+
+
+@pytest.mark.integration
+async def test_custom_scan_returns_503_when_not_configured(
+    client: TestClient,
+    migrated_session_maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def _raise_not_configured(path, **kwargs):
+        raise ClamAvNotConfiguredError("clamav_enabled is off")
+
+    monkeypatch.setattr(security_console_module, "run_custom_scan", _raise_not_configured)
+    headers = await _admin_headers(client, migrated_session_maker, "custom_scan_admin_nc")
+
+    response = client.post(
+        "/security/consoles/av/clamav/scan/custom",
+        json={"path": "/home/user/Downloads/project"},
+        headers=headers,
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {"error": "clamav_not_configured"}
+
+
+@pytest.mark.integration
+async def test_custom_scan_returns_503_when_clamd_unreachable(
+    client: TestClient,
+    migrated_session_maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def _raise_unreachable(path, **kwargs):
+        raise ClamdError("connection refused", reason="unreachable")
+
+    monkeypatch.setattr(security_console_module, "run_custom_scan", _raise_unreachable)
+    headers = await _admin_headers(client, migrated_session_maker, "custom_scan_admin_unreach")
+
+    response = client.post(
+        "/security/consoles/av/clamav/scan/custom",
+        json={"path": "/home/user/Downloads/project"},
+        headers=headers,
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {"error": "clamav_unreachable"}
+
+
+@pytest.mark.integration
+async def test_custom_scan_real_wiring_has_no_root_restriction(
+    client: TestClient,
+    migrated_session_maker: async_sessionmaker[AsyncSession],
+    tmp_path,
+):
+    """Post-merge user finding (2026-08-02): drives the REAL
+    `run_custom_scan` (not monkeypatched) through the real HTTP endpoint —
+    a path FAR outside the old `_known_scan_roots()` allowlist (this
+    tmp_path is nowhere near the real Downloads/home/OS temp dir) must NOT
+    be rejected with 403 `path_outside_scan_roots` anymore (that whole
+    check is gone for this endpoint, see `run_custom_scan`'s own
+    docstring) — it must reach the next real, honest stage instead: clamd
+    not configured in this test environment (`CLAMAV_ENABLED=False`, see
+    conftest.py) — 503 `clamav_not_configured`, never 403.
+
+    Deliberately does NOT stand up `tests/common/fake_clamd.py` here — see
+    the equivalent quarantine real-wiring test's own docstring for why a
+    `TestClient.post()`-driven request starves that in-process fake
+    server's event loop (confirmed empirically); the full success path
+    (real detection + persisted history) is covered separately by
+    tests/integration/test_clamav_live.py against this dev machine's real
+    container.
+    """
+    outside_dir = tmp_path / "definitely-not-in-any-allowlist"
+    outside_dir.mkdir()
+    headers = await _admin_headers(client, migrated_session_maker, "custom_scan_admin_real")
+
+    response = client.post(
+        "/security/consoles/av/clamav/scan/custom",
+        json={"path": str(outside_dir)},
+        headers=headers,
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {"error": "clamav_not_configured"}
+
+
+# ---------------------------------------------------------------------------
+# A-33: GET /security/consoles/av/clamav/scan/history
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_scan_history_is_honestly_empty_when_nothing_has_scanned_yet(
+    client: TestClient, migrated_session_maker: async_sessionmaker[AsyncSession]
+):
+    headers = await _admin_headers(client, migrated_session_maker, "scan_history_admin_empty")
+
+    response = client.get("/security/consoles/av/clamav/scan/history", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == {"items": []}
+
+
+@pytest.mark.integration
+async def test_scan_history_reflects_a_real_quick_scan(
+    client: TestClient,
+    migrated_session_maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Confirms `POST .../scan/quick` and `GET .../scan/history` are wired
+    to the SAME persistent table — not just that each endpoint responds
+    honestly on its own."""
+
+    async def _fake_run_quick_scan(**kwargs):
+        return {
+            "scanned_count": 7,
+            "infected": [{"path": "/tmp/eicar.txt", "signature": "Eicar-Test-Signature"}],
+            "target_dirs": ["/tmp"],
+        }
+
+    monkeypatch.setattr(security_console_module, "run_quick_scan", _fake_run_quick_scan)
+    headers = await _admin_headers(client, migrated_session_maker, "scan_history_admin_quick")
+
+    scan_response = client.post("/security/consoles/av/clamav/scan/quick", headers=headers)
+    assert scan_response.status_code == 200
+
+    history_response = client.get("/security/consoles/av/clamav/scan/history", headers=headers)
+
+    assert history_response.status_code == 200
+    items = history_response.json()["items"]
+    assert len(items) == 1
+    assert items[0]["scan_type"] == "quick"
+    assert items[0]["path"] is None
+    assert items[0]["scanned_count"] == 7
+    assert items[0]["infected_count"] == 1
+
+
+@pytest.mark.integration
+async def test_scan_history_survives_a_fresh_dependency_override(
+    client: TestClient,
+    migrated_session_maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A-33's own DoD: scan history must be REAL persistence (a DB row),
+    not process-memory state like `ClamAvScanJobRegistry` — this test
+    writes a row directly via the app's own migrated DB (bypassing the HTTP
+    layer entirely) and confirms `GET .../scan/history` reads it back,
+    the same round trip a server restart would also have to survive (the
+    live DoD check restarts the real process; this is the fast, in-process
+    equivalent: a completely fresh `AsyncSession` from the very same
+    session maker, proving the row lives in the DB file, not in any
+    Python object)."""
+    from datetime import datetime
+
+    from app.services.mcp.security_connectors.clamav import record_scan_history
+
+    async with migrated_session_maker() as session:
+        await record_scan_history(
+            session,
+            scan_type="full",
+            path=None,
+            scanned_count=42,
+            infected_count=0,
+            started_at=datetime(2026, 7, 19, 8, 0, 0),
+            finished_at=datetime(2026, 7, 19, 8, 5, 0),
+        )
+
+    headers = await _admin_headers(client, migrated_session_maker, "scan_history_admin_persist")
+    response = client.get("/security/consoles/av/clamav/scan/history", headers=headers)
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert len(items) == 1
+    assert items[0]["scan_type"] == "full"
+    assert items[0]["scanned_count"] == 42
 
 
 # ---------------------------------------------------------------------------
@@ -364,3 +597,270 @@ async def test_quarantine_real_wiring_rejects_outside_and_accepts_inside_scan_ro
     assert not inside_file.exists()  # actually moved this time
     quarantined_path = inside_response.json()["quarantined_path"]
     assert quarantined_path.endswith("_eicar.txt")
+
+
+# ---------------------------------------------------------------------------
+# A-27: GET /security/consoles/av/clamav/quarantine (list)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_quarantine_list_returns_items_from_the_real_connector_shape(
+    client: TestClient,
+    migrated_session_maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def _fake_list_quarantine_entries(settings=None):
+        return [
+            QuarantineEntry(
+                id="abc123",
+                quarantined_path="/data/quarantine/abc123_eicar.txt",
+                original_path="/home/user/Downloads/eicar.txt",
+                reason="Eicar-Test-Signature",
+                quarantined_at="2026-07-19T10:00:00+00:00",
+            )
+        ]
+
+    monkeypatch.setattr(
+        security_console_module, "list_quarantine_entries", _fake_list_quarantine_entries
+    )
+    headers = await _admin_headers(client, migrated_session_maker, "quarantine_list_admin")
+
+    response = client.get("/security/consoles/av/clamav/quarantine", headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items"] == [
+        {
+            "id": "abc123",
+            "quarantined_path": "/data/quarantine/abc123_eicar.txt",
+            "original_path": "/home/user/Downloads/eicar.txt",
+            "reason": "Eicar-Test-Signature",
+            "quarantined_at": "2026-07-19T10:00:00+00:00",
+        }
+    ]
+
+
+@pytest.mark.integration
+async def test_quarantine_list_is_honestly_empty_when_nothing_is_quarantined(
+    client: TestClient,
+    migrated_session_maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(security_console_module, "list_quarantine_entries", lambda settings=None: [])
+    headers = await _admin_headers(client, migrated_session_maker, "quarantine_list_admin_empty")
+
+    response = client.get("/security/consoles/av/clamav/quarantine", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == {"items": []}
+
+
+@pytest.mark.integration
+async def test_quarantine_list_real_wiring_reflects_a_real_quarantined_file(
+    client: TestClient,
+    migrated_session_maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    """Unlike the two tests above (monkeypatched), this one drives the real
+    `quarantine_file` -> real `list_quarantine_entries` round trip through
+    the real HTTP endpoints, confirming the list genuinely reflects what
+    `quarantine_file` wrote to disk, not just the router's own status-code
+    mapping."""
+    import app.services.mcp.security_connectors.clamav as clamav_module
+
+    allowed_root = tmp_path / "Downloads"
+    allowed_root.mkdir()
+    settings = clamav_module.Settings(clamav_quarantine_dir=str(tmp_path / "quarantine"))
+    monkeypatch.setattr(clamav_module, "_default_quick_scan_targets", lambda: [allowed_root])
+    monkeypatch.setattr(clamav_module, "get_settings", lambda: settings)
+
+    source = allowed_root / "eicar.txt"
+    source.write_bytes(b"move me")
+    headers = await _admin_headers(client, migrated_session_maker, "quarantine_list_admin_real")
+
+    quarantine_response = client.post(
+        "/security/consoles/av/clamav/quarantine",
+        json={"path": str(source), "reason": "Eicar-Test-Signature"},
+        headers=headers,
+    )
+    assert quarantine_response.status_code == 200
+
+    list_response = client.get("/security/consoles/av/clamav/quarantine", headers=headers)
+
+    assert list_response.status_code == 200
+    items = list_response.json()["items"]
+    assert len(items) == 1
+    assert items[0]["original_path"] == str(source.resolve())
+    assert items[0]["reason"] == "Eicar-Test-Signature"
+
+
+# ---------------------------------------------------------------------------
+# A-27: POST /security/consoles/av/clamav/quarantine/{item_id}/restore
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_quarantine_restore_returns_the_restored_path_on_success(
+    client: TestClient,
+    migrated_session_maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def _fake_restore(item_id, **kwargs):
+        assert item_id == "abc123"
+        return Path("/home/user/Downloads/eicar.txt")
+
+    monkeypatch.setattr(security_console_module, "restore_quarantine_file", _fake_restore)
+    headers = await _admin_headers(client, migrated_session_maker, "quarantine_restore_admin")
+
+    response = client.post(
+        "/security/consoles/av/clamav/quarantine/abc123/restore", headers=headers
+    )
+
+    assert response.status_code == 200
+    assert response.json()["restored_path"] == "/home/user/Downloads/eicar.txt"
+
+
+@pytest.mark.integration
+async def test_quarantine_restore_returns_404_for_an_unknown_item(
+    client: TestClient,
+    migrated_session_maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def _raise_not_found(item_id, **kwargs):
+        raise ClamAvQuarantineNotFoundError(item_id)
+
+    monkeypatch.setattr(security_console_module, "restore_quarantine_file", _raise_not_found)
+    headers = await _admin_headers(client, migrated_session_maker, "quarantine_restore_admin_404")
+
+    response = client.post(
+        "/security/consoles/av/clamav/quarantine/does-not-exist/restore", headers=headers
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == {"error": "quarantine_item_not_found"}
+
+
+@pytest.mark.integration
+async def test_quarantine_restore_returns_409_on_a_restore_path_conflict(
+    client: TestClient,
+    migrated_session_maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def _raise_conflict(item_id, **kwargs):
+        raise ClamAvRestoreConflictError("/home/user/Downloads/eicar.txt")
+
+    monkeypatch.setattr(security_console_module, "restore_quarantine_file", _raise_conflict)
+    headers = await _admin_headers(client, migrated_session_maker, "quarantine_restore_admin_409")
+
+    response = client.post(
+        "/security/consoles/av/clamav/quarantine/abc123/restore", headers=headers
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {"error": "restore_path_conflict"}
+
+
+@pytest.mark.integration
+async def test_quarantine_restore_real_wiring_moves_the_file_back_to_disk(
+    client: TestClient,
+    migrated_session_maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    """Real `quarantine_file` -> real `restore_quarantine_file` round trip
+    through the real HTTP endpoints — the DoD's own "восстановлен... файл
+    реально вернулся на исходный путь на диске" check, at the router level
+    (the connector-level equivalent already lives in
+    tests/unit/test_clamav_scan.py)."""
+    import app.services.mcp.security_connectors.clamav as clamav_module
+
+    allowed_root = tmp_path / "Downloads"
+    allowed_root.mkdir()
+    settings = clamav_module.Settings(clamav_quarantine_dir=str(tmp_path / "quarantine"))
+    monkeypatch.setattr(clamav_module, "_default_quick_scan_targets", lambda: [allowed_root])
+    monkeypatch.setattr(clamav_module, "get_settings", lambda: settings)
+
+    source = allowed_root / "eicar.txt"
+    source.write_bytes(b"move me")
+    headers = await _admin_headers(client, migrated_session_maker, "quarantine_restore_admin_real")
+
+    quarantine_response = client.post(
+        "/security/consoles/av/clamav/quarantine", json={"path": str(source)}, headers=headers
+    )
+    assert quarantine_response.status_code == 200
+    assert not source.exists()  # really moved into quarantine
+
+    item_id = client.get(
+        "/security/consoles/av/clamav/quarantine", headers=headers
+    ).json()["items"][0]["id"]
+
+    restore_response = client.post(
+        f"/security/consoles/av/clamav/quarantine/{item_id}/restore", headers=headers
+    )
+
+    assert restore_response.status_code == 200
+    assert restore_response.json()["restored_path"] == str(source.resolve())
+    # The DoD-relevant assertion: a real filesystem check, not just the
+    # HTTP response body.
+    assert source.exists()
+    assert source.read_bytes() == b"move me"
+
+
+# ---------------------------------------------------------------------------
+# A-27: POST /security/consoles/av/clamav/reload
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_reload_returns_503_when_not_configured(
+    client: TestClient,
+    migrated_session_maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(security_console_module, "create_clamav_client", lambda: None)
+    headers = await _admin_headers(client, migrated_session_maker, "reload_admin_nc")
+
+    response = client.post("/security/consoles/av/clamav/reload", headers=headers)
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {"error": "clamav_not_configured"}
+
+
+@pytest.mark.integration
+async def test_reload_returns_503_when_clamd_unreachable(
+    client: TestClient,
+    migrated_session_maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class _FailingClient:
+        async def reload(self):
+            raise ClamdError("connection refused", reason="unreachable")
+
+    monkeypatch.setattr(security_console_module, "create_clamav_client", lambda: _FailingClient())
+    headers = await _admin_headers(client, migrated_session_maker, "reload_admin_unreach")
+
+    response = client.post("/security/consoles/av/clamav/reload", headers=headers)
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {"error": "clamav_unreachable"}
+
+
+@pytest.mark.integration
+async def test_reload_returns_reloaded_true_on_success(
+    client: TestClient,
+    migrated_session_maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class _OkClient:
+        async def reload(self):
+            return None
+
+    monkeypatch.setattr(security_console_module, "create_clamav_client", lambda: _OkClient())
+    headers = await _admin_headers(client, migrated_session_maker, "reload_admin_ok")
+
+    response = client.post("/security/consoles/av/clamav/reload", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == {"reloaded": True}
