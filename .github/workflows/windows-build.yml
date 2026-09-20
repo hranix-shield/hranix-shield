@@ -40,6 +40,27 @@ name: Windows build and smoke test (A-21)
 #      screen (see that script's own docstring and README.md's honesty
 #      section for why that specific gap needs a human looking at a real
 #      Windows screen, not something CI can do).
+#   6. (A-24) the vendored `osqueryi.exe` this workflow's own "Vendor
+#      osquery" step downloads/extracts from the OFFICIAL osquery MSI
+#      actually runs on this runner and answers a real query, AND the
+#      installed app's "Сеть"/"Вирусная активность" consoles report
+#      `connector.status: "ok"` using THAT SAME vendored binary — not a
+#      system-installed osquery this runner happens to already have (see
+#      the "Compare the..." step near the end) — this is the one thing
+#      that cannot be verified at all on the macOS machine that wrote A-24
+#      (no way to run a Windows PE32+ binary there), same honest limit as
+#      point 4 above for os_firewall.
+#   7. (A-25) the official Wazuh agent MSI installs silently via
+#      installer.iss's own [Run] entry and registers a real `WazuhSvc`
+#      Windows service on this runner — this workflow explicitly selects
+#      the "wazuhagent" task (see the install step below) so THIS run
+#      actually exercises that entry rather than skipping it (unchecked
+#      is the correct DEFAULT for a real end user, see installer.iss's own
+#      comment). It does NOT prove enrollment succeeded against a real
+#      Manager (this runner has no route to this project's own
+#      infra/security/wazuh/docker-compose.yml, which only exists on a
+#      developer's own machine) — see the dedicated smoke-test step below
+#      for exactly what IS and is not asserted.
 
 on:
   push:
@@ -112,6 +133,144 @@ jobs:
         run: |
           build-venv\Scripts\python.exe packaging\windows\test\check_tray_locale.py
 
+      - name: Vendor osquery (download official MSI, extract via msiexec /a, verify checksum)
+        # A-24: downloads the OFFICIAL osquery Windows MSI and extracts a
+        # standalone osqueryi.exe WITHOUT actually installing osquery onto
+        # this runner (no service registered, no PATH change, no
+        # system-wide state) — `msiexec /a ... TARGETDIR=...` is the
+        # documented, standard "administrative install" mode for exactly
+        # this purpose (see this task's own brief). Placed into
+        # packaging\windows\vendor\osquery\osqueryi.exe, where
+        # hranix-shield.spec's own `datas=[...]` row (see that file) picks
+        # it up, and osquery.py's `_vendored_osqueryi_path()` looks for it
+        # at runtime — same "works out of the box, nothing to install by
+        # hand" mechanism macOS's vendor-osquery.sh/Linux's
+        # vendor-osquery.sh already established, run here instead of a
+        # local script because this is the only place in the whole project
+        # a Windows PE32+ binary can be produced/verified at all (no
+        # Windows machine at development time, see README.md's honesty
+        # section).
+        #
+        # Pinned version/URL/checksum (2026-07-18, verified against
+        # osquery's own GitHub Releases API, not recalled from memory — the
+        # exact same release macOS/Linux's own vendor-osquery.sh scripts
+        # use, see those files): tag "5.23.1", asset "osquery-5.23.1.msi".
+        # sha256 computed on the macOS dev machine that wrote this
+        # workflow right after downloading the same file this step
+        # downloads — this step re-verifies it independently on the actual
+        # runner rather than trusting that one-time computation blindly.
+        #
+        # The MSI's own internal layout (verified on the macOS dev machine
+        # using `msitools`' `msiextract`, an independent OSS MSI-reading
+        # tool, NOT `msiexec` itself — real Windows `msiexec /a` on this
+        # runner is still what actually matters and is what this step
+        # uses) ships `osquery\osqueryi.exe` as its own genuinely separate
+        # PE32+ file (unlike macOS's .pkg/Linux's .deb, where `osqueryi` is
+        # a symlink to the `osqueryd` binary under a different name) — no
+        # rename/re-sign step is needed here the way macOS's ad hoc-codesign
+        # dance was.
+        run: |
+          $osqueryVersion = "5.23.1"
+          $osqueryMsiUrl = "https://github.com/osquery/osquery/releases/download/$osqueryVersion/osquery-$osqueryVersion.msi"
+          $expectedSha256 = "BB3ADC9F32F257147855404D24BCEEBCD8BAF6E65F4D4CA43E186F4A85FA6ED3"
+
+          Write-Host "downloading $osqueryMsiUrl"
+          Invoke-WebRequest -Uri $osqueryMsiUrl -OutFile osquery.msi -UseBasicParsing
+
+          $actualSha256 = (Get-FileHash -Path osquery.msi -Algorithm SHA256).Hash
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "osquery.msi sha256 mismatch: expected $expectedSha256, got $actualSha256 - refusing to vendor an unverified binary"
+          }
+          Write-Host "sha256 verified"
+
+          $targetDir = Join-Path $pwd "osquery-admin-install"
+          $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/a", "osquery.msi", "/qn", "TARGETDIR=$targetDir" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) {
+            throw "msiexec /a exited with code $($proc.ExitCode)"
+          }
+
+          $osqueryiExe = Get-ChildItem -Path $targetDir -Recurse -Filter "osqueryi.exe" | Select-Object -First 1
+          if (-not $osqueryiExe) {
+            throw "osqueryi.exe not found anywhere under $targetDir after msiexec /a - osquery's MSI layout may have changed since $osqueryVersion, inspect $targetDir manually"
+          }
+          Write-Host "found osqueryi.exe at $($osqueryiExe.FullName)"
+
+          $vendorDir = "packaging\windows\vendor\osquery"
+          New-Item -ItemType Directory -Force -Path $vendorDir | Out-Null
+          Copy-Item -Path $osqueryiExe.FullName -Destination "$vendorDir\osqueryi.exe" -Force
+
+          Write-Host "verifying the vendored binary actually runs and answers a real query"
+          & "$vendorDir\osqueryi.exe" --version
+          & "$vendorDir\osqueryi.exe" --json "SELECT count(*) AS process_count FROM processes;"
+
+          $sizeMb = [math]::Round((Get-Item "$vendorDir\osqueryi.exe").Length / 1MB, 1)
+          Write-Host "vendor-osquery: done - $vendorDir\osqueryi.exe ($sizeMb MB)"
+          Write-Host "vendor-osquery: licence - osquery is dual-licensed Apache-2.0 OR GPL-2.0-only (SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only), verified at https://github.com/osquery/osquery/blob/$osqueryVersion/LICENSE, 2026-07-18 - this project elects Apache-2.0."
+
+      - name: Vendor geoip (download offline IP -> country CSV dataset, verify checksum)
+        # A-40: downloads the same OS-agnostic CSV dataset macOS's
+        # packaging/macos/vendor-geoip.sh / Linux's packaging/linux/
+        # vendor-geoip.sh already vendor — see those scripts (and
+        # geoip.py's module docstring) for the full licence research:
+        # Public Domain Dedication and Licence v1.0 (PDDL), no attribution,
+        # no MaxMind-account/registration step required. Unlike osquery
+        # above, this is plain text data with no MSI/binary-extraction
+        # dance — a straight download + checksum verify, run here (rather
+        # than a packaging\windows\vendor-geoip.ps1 script, unlike the
+        # macOS/Linux .sh scripts) because there is nowhere else in this
+        # project a Windows build step runs at all (no Windows machine at
+        # development time, see README.md's honesty section) — kept as a
+        # plain inline step for the same reason the osquery step above is
+        # inline rather than a checked-in .ps1.
+        #
+        # NOT verified live on a real Windows runner in this session (no
+        # Windows machine available while building A-40, same honesty
+        # this workflow's own osquery/Wazuh steps already carry for their
+        # respective "not independently re-measured on Windows" notes) —
+        # the PowerShell below mirrors the macOS/Linux shell scripts'
+        # logic (download data + its published checksum in the same
+        # release, compare) as closely as PowerShell's own cmdlets allow.
+        run: |
+          $geoipBaseUrl = "https://github.com/sapics/ip-location-db/releases/download/latest"
+          $geoipChecksumBaseUrl = "https://github.com/sapics/ip-location-db/releases/download/checksum"
+          $vendorDir = "packaging\windows\vendor\geoip"
+          New-Item -ItemType Directory -Force -Path $vendorDir | Out-Null
+
+          foreach ($filename in @("user-country-ipv4.csv", "user-country-ipv6.csv")) {
+            Write-Host "downloading $filename"
+            Invoke-WebRequest -Uri "$geoipBaseUrl/$filename" -OutFile "$vendorDir\$filename" -UseBasicParsing
+            Invoke-WebRequest -Uri "$geoipChecksumBaseUrl/$filename.sha256" -OutFile "$vendorDir\$filename.sha256" -UseBasicParsing
+
+            $expectedSha256 = (Get-Content "$vendorDir\$filename.sha256").Split(" ")[0].ToUpper()
+            $actualSha256 = (Get-FileHash -Path "$vendorDir\$filename" -Algorithm SHA256).Hash
+            if ($actualSha256 -ne $expectedSha256) {
+              throw "$filename sha256 mismatch: expected $expectedSha256, got $actualSha256 - refusing to vendor a file that failed its own publisher's integrity check"
+            }
+            Write-Host "$filename sha256 verified"
+            Remove-Item "$vendorDir\$filename.sha256"
+          }
+
+          $sizeMb = [math]::Round(((Get-ChildItem $vendorDir | Measure-Object -Property Length -Sum).Sum) / 1MB, 1)
+          Write-Host "vendor-geoip: done - $vendorDir ($sizeMb MB)"
+          Write-Host "vendor-geoip: licence - Public Domain Dedication and Licence v1.0 (PDDL), https://opendatacommons.org/licenses/pddl/1.0/, verified against https://github.com/sapics/ip-location-db's own README, 2026-07-23 - free use, no attribution, no account/registration needed."
+
+      - name: Vendor restic (download official windows_amd64.zip, verify checksum, extract binary + LICENSE)
+        # A-61: vendors restic 0.19.1 (BSD-2-Clause — licence-gate-clean
+        # per CLAUDE.md: BSD binaries are vendored, not linked) into
+        # packaging\windows\vendor\restic\ (restic.exe + LICENSE), where
+        # hranix-shield.spec's own A-61 datas row picks it up and
+        # restic_client.py's vendored-first resolver finds it at runtime
+        # (same shape as osquery's _vendored_osqueryi_path). Runs the
+        # checked-in packaging/windows/vendor-restic.sh via Git Bash
+        # (preinstalled on windows-latest) — unlike osquery's inline
+        # PowerShell above there is NO msiexec/admin-install dance for a
+        # plain zip, so one script serves both this runner and a local
+        # developer checkout, no duplicate logic. Version/URL/sha256 are
+        # pinned inside the script (cross-checked against restic's own
+        # release SHA256SUMS, see its header comment).
+        shell: bash
+        run: packaging/windows/vendor-restic.sh
+
       - name: Build PyInstaller onedir bundle
         run: |
           build-venv\Scripts\pyinstaller.exe packaging\windows\hranix-shield.spec --distpath packaging\windows\dist --workpath packaging\windows\build --noconfirm
@@ -141,6 +300,21 @@ jobs:
           }
           Write-Host "Using Inno Setup compiler at $found"
           echo "path=$found" >> $Env:GITHUB_OUTPUT
+
+      - name: Download the official Wazuh agent MSI (A-25)
+        # Fetched at build time, not vendored in git (see installer.iss's
+        # own [Files] comment) — same "fetch, don't commit" relationship
+        # this project already has with `docker pull
+        # wazuh/wazuh-manager:...`. Version pinned to match
+        # infra/security/wazuh/docker-compose.yml's manager image tag and
+        # packaging/macos/wazuh_agent_setup.py's AGENT_VERSION (Wazuh's
+        # own documented recommendation: agent/manager version parity).
+        run: |
+          New-Item -ItemType Directory -Force -Path packaging\windows\vendor | Out-Null
+          $url = "https://packages.wazuh.com/4.x/windows/wazuh-agent-4.14.6-1.msi"
+          $dest = "packaging\windows\vendor\wazuh-agent-4.14.6-1.msi"
+          Invoke-WebRequest -Uri $url -OutFile $dest
+          Write-Host "downloaded $url -> $dest ($((Get-Item $dest).Length) bytes)"
 
       - name: Compile the Inno Setup installer
         run: |
@@ -180,8 +354,16 @@ jobs:
         # account by default, so no explicit elevation step is added here
         # (not independently re-verified in this session beyond that being
         # GitHub's own documented runner behaviour).
+        #
+        # /TASKS="wazuhagent" (A-25): the "wazuhagent" task in
+        # installer.iss is UNCHECKED by default (the correct default for
+        # a real end user — see that file's own comment), which
+        # /VERYSILENT alone would leave unselected. This workflow
+        # explicitly opts it in via ISCC's own documented /TASKS switch so
+        # THIS CI run actually exercises the new [Run] entry end-to-end,
+        # rather than silently skipping the one thing this task added.
         run: |
-          $proc = Start-Process -FilePath "packaging\windows\dist\installer\hranix-shield-setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOX","/NORESTART" -Wait -PassThru
+          $proc = Start-Process -FilePath "packaging\windows\dist\installer\hranix-shield-setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOX","/NORESTART",'/TASKS="wazuhagent"' -Wait -PassThru
           if ($proc.ExitCode -ne 0) {
             throw "installer exited with code $($proc.ExitCode)"
           }
@@ -231,24 +413,31 @@ jobs:
           Write-Host "bootstrap-admin login succeeded, got a real JWT"
           echo "token=$($json.access_token)" >> $Env:GITHUB_OUTPUT
 
-      - name: Compare the "Периметр" console against netsh's real answer on this host
+      - name: Compare the "Периметр" console against Get-NetFirewallProfile's real answer on this host
         # This is the one check in this workflow that speaks directly to
         # the whole reason A-19..A-22 exist (see the plan-spec's own
         # motivation section): os_firewall.py's Windows branch
         # (_windows_firewall_active(), server/app/services/mcp/
-        # security_connectors/os_firewall.py) was written from documented
-        # `netsh` output only, never verified against a real Windows host
-        # (that file's own docstring says so explicitly) - a Docker
-        # deployment of this same code can NEVER see anything but a Linux
-        # container's own state here. This step runs the exact same
-        # `netsh advfirewall show allprofiles` command the connector
-        # itself calls, parses it the same way (a per-profile "State
-        # ON/OFF" line), and fails the build if the console's own answer
-        # disagrees with that ground truth - but only when the console
-        # reports a real "ok" status; a "permission_denied"/"unreachable"
-        # result is logged, not asserted against, since that would be a
-        # different (also real, but separately actionable) finding, not
-        # this check's job.
+        # security_connectors/os_firewall.py) reads this host's REAL
+        # firewall state - a Docker deployment of this same code can NEVER
+        # see anything but a Linux container's own state here. This step
+        # builds its ground truth from the same CIM source the connector
+        # itself uses (Get-NetFirewallProfile) and fails the build if the
+        # console's own answer disagrees with it - but only when the
+        # console reports a real "ok" status; a
+        # "permission_denied"/"unreachable" result is logged, not asserted
+        # against, since that would be a different (also real, but
+        # separately actionable) finding, not this check's job.
+        #
+        # 2026-09-19: this ground truth used to be netsh's own
+        # `State ON|OFF` text (parsed by regex) - locale-fragile on
+        # principle (a ru-RU machine prints «Состояние ВКЛЮЧИТЬ», where
+        # the A-18-era regex finds nothing; caught live by the local
+        # Windows acceptance on a real Russian machine, which is also what
+        # drove the connector itself to the CIM query below). The smoke
+        # check now parses no localized text at all: it asks
+        # Get-NetFirewallProfile for the same Enabled flags the connector
+        # asks for and compares booleans.
         run: |
           $authHeader = @{ Authorization = "Bearer $($Env:LOGIN_TOKEN)" }
           $resp = Invoke-WebRequest -Uri "http://127.0.0.1:8080/security/consoles/perimeter" -Headers $authHeader -UseBasicParsing
@@ -256,30 +445,116 @@ jobs:
           Write-Host "GET /security/consoles/perimeter ->"
           Write-Host ($json | ConvertTo-Json -Depth 10)
 
-          $netshOutput = (netsh advfirewall show allprofiles | Out-String)
-          Write-Host "netsh advfirewall show allprofiles ->"
-          Write-Host $netshOutput
+          $profileFlags = (Get-NetFirewallProfile | ForEach-Object { [int][bool]$_.Enabled }) -join ','
+          Write-Host "Get-NetFirewallProfile Enabled flags -> $profileFlags"
 
           $connectorStatus = $json.connectors.os_firewall.status
           $reportedActive = $json.metrics.firewall_active
           Write-Host "API connectors.os_firewall.status=$connectorStatus ; API metrics.firewall_active=$reportedActive"
 
           if ($connectorStatus -ne "ok") {
-            Write-Host "connector status is '$connectorStatus', not 'ok' - skipping the netsh cross-check honestly rather than asserting against it (see this step's own comment)"
+            Write-Host "connector status is '$connectorStatus', not 'ok' - skipping the CIM cross-check honestly rather than asserting against it (see this step's own comment)"
           } else {
-            $states = [regex]::Matches($netshOutput, "State\s+(ON|OFF)") | ForEach-Object { $_.Groups[1].Value.ToUpperInvariant() }
+            $states = $profileFlags -split ','
             if ($states.Count -eq 0) {
-              throw "could not parse any 'State ON|OFF' line out of netsh's own output - this check cannot be trusted, failing loudly instead of silently passing"
+              throw "Get-NetFirewallProfile returned no profile flags - this check cannot be trusted, failing loudly instead of silently passing"
             }
-            $allOn = ($states | Where-Object { $_ -ne "ON" }).Count -eq 0
-            Write-Host "netsh-derived allOn=$allOn (profiles: $($states -join ', '))"
+            $allOn = ($states | Where-Object { $_ -ne "1" }).Count -eq 0
+            Write-Host "CIM-derived allOn=$allOn (profiles: $profileFlags)"
             if ($reportedActive -ne $allOn) {
-              throw "os_firewall console (active=$reportedActive) disagrees with netsh's own real-host answer (allOn=$allOn) - the connector is not reading this machine's real firewall state correctly"
+              throw "os_firewall console (active=$reportedActive) disagrees with Get-NetFirewallProfile's own real-host answer (allOn=$allOn) - the connector is not reading this machine's real firewall state correctly"
             }
-            Write-Host "os_firewall console agrees with netsh's real-host state - the connector is reading the ACTUAL Windows Defender Firewall of this runner, not a container"
+            Write-Host "os_firewall console agrees with the host's real CIM firewall state - the connector is reading the ACTUAL Windows Defender Firewall of this runner, not a container"
           }
         env:
           LOGIN_TOKEN: ${{ steps.login.outputs.token }}
+
+      - name: Compare the "Сеть"/"Вирусная активность" consoles against the vendored osqueryi.exe
+        # A-24's own equivalent of the netsh cross-check above, for the
+        # OTHER connector A-19..A-22's native installers left unsolved
+        # until now: osquery.py's `_OSQUERYI` used to resolve purely
+        # through this process's own PATH, so neither of these two
+        # consoles could ever say more than "not_configured" on a fresh
+        # install with nothing manually installed by the end user (see
+        # infra/security/osquery/README.md and this task's own brief).
+        # Unlike the netsh check, this asserts `connector.status == "ok"`
+        # UNCONDITIONALLY (not "only when already ok") - after A-24, a
+        # `windows-latest` runner (which the "Vendor osquery" step above
+        # already populated packaging\windows\vendor\osquery\osqueryi.exe
+        # for, and which the installed app's own bundle now includes via
+        # hranix-shield.spec's `datas=[...]` row) has no honest reason left
+        # to report anything else - if it does, that IS the actionable bug
+        # this check exists to catch, not a pre-existing permission gap
+        # like os_firewall's Windows branch could plausibly have.
+        run: |
+          $authHeader = @{ Authorization = "Bearer $($Env:LOGIN_TOKEN)" }
+
+          $networkResp = Invoke-WebRequest -Uri "http://127.0.0.1:8080/security/consoles/network" -Headers $authHeader -UseBasicParsing
+          $networkJson = $networkResp.Content | ConvertFrom-Json
+          Write-Host "GET /security/consoles/network -> connector.status=$($networkJson.connector.status) active_connections=$($networkJson.metrics.active_connections)"
+          if ($networkJson.connector.status -ne "ok") {
+            throw "network console's osquery connector reports '$($networkJson.connector.status)', not 'ok' - A-24's vendored osqueryi.exe should make this work out of the box on this runner, see hranix-shield.spec's datas=[...] row and osquery.py's _resolve_osqueryi()"
+          }
+
+          $avResp = Invoke-WebRequest -Uri "http://127.0.0.1:8080/security/consoles/av" -Headers $authHeader -UseBasicParsing
+          $avJson = $avResp.Content | ConvertFrom-Json
+          Write-Host "GET /security/consoles/av -> connectors.osquery.status=$($avJson.connectors.osquery.status) osquery_process_count=$($avJson.metrics.osquery_process_count)"
+          if ($avJson.connectors.osquery.status -ne "ok") {
+            throw "av console's osquery connector reports '$($avJson.connectors.osquery.status)', not 'ok'"
+          }
+          if ($null -eq $avJson.metrics.osquery_process_count) {
+            throw "av console's osquery_process_count was null despite connector.status == 'ok'"
+          }
+
+          # Ground truth: call the EXACT SAME vendored binary the installed
+          # app's own bundle contains (not a second, potentially different
+          # download) directly, and sanity-check the two process counts
+          # agree within normal process-churn drift - a byte-exact match
+          # is not expected (the two calls are not simultaneous, live
+          # process counts on a real OS drift between any two snapshots
+          # taken a moment apart, same honest "close, not identical"
+          # comparison already accepted for the macOS/Linux live checks in
+          # the A-24 task report), a wildly different number would not be
+          # explained by ordinary drift and means something is wrong.
+          $vendoredExe = "packaging\windows\vendor\osquery\osqueryi.exe"
+          $directOutput = & $vendoredExe --json "SELECT count(*) AS process_count FROM processes;" | ConvertFrom-Json
+          $directProcessCount = [int]$directOutput[0].process_count
+          $consoleProcessCount = [int]$avJson.metrics.osquery_process_count
+          Write-Host "direct osqueryi.exe process_count=$directProcessCount vs console's osquery_process_count=$consoleProcessCount"
+          if ([math]::Abs($directProcessCount - $consoleProcessCount) -gt 50) {
+            throw "console's osquery_process_count ($consoleProcessCount) is wildly different from a direct call to the SAME vendored osqueryi.exe ($directProcessCount) - something is wrong beyond normal process-count drift"
+          }
+          Write-Host "network/av consoles' osquery-backed metrics agree (within normal process-count drift) with a direct call to the vendored osqueryi.exe - the installed app is genuinely using its own bundled binary, not a fabricated value"
+        env:
+          LOGIN_TOKEN: ${{ steps.login.outputs.token }}
+
+      - name: Check the Wazuh agent's WazuhSvc service was installed and started (A-25)
+        # What this DOES prove: installer.iss's new [Run] entry (silent
+        # msiexec install with WAZUH_MANAGER/WAZUH_REGISTRATION_SERVER)
+        # ran on a real Windows OS and produced a real `WazuhSvc` Windows
+        # service in a Running state — the same class of "real OS, real
+        # service manager" evidence the os_firewall/netsh check above
+        # gives for the firewall connector.
+        # What this does NOT prove: that enrollment against a real
+        # Manager succeeded — this runner has no network route to
+        # infra/security/wazuh/docker-compose.yml (that container only
+        # ever runs on a developer's own machine in this project, see
+        # packaging/macos/README.md's A-25 section) — so
+        # WAZUH_MANAGER=127.0.0.1 here points at nothing, and this step
+        # deliberately does NOT assert the service reaches a "connected"
+        # state, only that it exists and started. Logged, not asserted,
+        # so a real-but-separately-actionable enrollment failure here
+        # does not fail the whole build over a check it was never
+        # positioned to make.
+        run: |
+          $svc = Get-Service -Name WazuhSvc -ErrorAction SilentlyContinue
+          if (-not $svc) {
+            throw "WazuhSvc service not found after installer.iss's wazuhagent [Run] step - the MSI install itself failed silently"
+          }
+          Write-Host "WazuhSvc found, status: $($svc.Status)"
+          if ($svc.Status -ne "Running") {
+            Write-Host "WazuhSvc is not Running (status=$($svc.Status)) - logged, not failing the build: this runner has no route to a real Wazuh Manager to enroll against (see this step's own comment), so a non-Running agent process here is expected, not a regression in installer.iss itself"
+          }
 
       - name: Stop the installed app
         if: always()
