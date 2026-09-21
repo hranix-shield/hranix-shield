@@ -51,8 +51,20 @@ fix it — a disabled button always tells you *why*. A fake "all clear" is treat
 
 ### Create your admin account
 
-The panel has no public registration. Before (or right after) the first launch, create the
-file `%LOCALAPPDATA%\Hranix\Hranix Shield\config.env`:
+The panel has no public registration — the installer creates your admin account for you.
+After copying the files, it shows the generated credentials on the final wizard page
+(login `admin` + a 20-character random password). **Save the password right away: it is
+shown only once.** Change it after your first sign-in.
+
+If you install silently (`/VERYSILENT`, e.g. scripted deployments), there is no wizard
+page — the installer writes the same credentials to
+`%LOCALAPPDATA%\Hranix\Hranix Shield\admin-credentials.txt` instead.
+
+**Manual way (for advanced users):** the installer never touches an existing admin — if
+`%LOCALAPPDATA%\Hranix\Hranix Shield\config.env` already contains a non-empty
+`BOOTSTRAP_ADMIN_USERNAME`, your credentials stay as they are (the same applies to
+CI/scripts that pre-write the file). To set the account by hand, create the file before
+the first launch:
 
 ```ini
 BOOTSTRAP_ADMIN_USERNAME=your-login
