@@ -17,6 +17,14 @@ from collections.abc import Callable
 class FakeClamd:
     """`scan_responder(data: bytes) -> bytes` decides what an INSTREAM
     upload gets answered with (defaults to always-clean: `b"stream: OK\\0"`).
+
+    A-63-4: `abort_stream_after_bytes` mimics the REAL clamd behaviour for
+    an over-`StreamMaxLength` upload — clamd does NOT read the stream to its
+    end; after the given number of bytes it sends its
+    `INSTREAM size limit exceeded. ERROR` line and SLAMS the connection shut
+    mid-upload (the client usually sees the answer only through a failed
+    read or a connection reset). `None` (default) keeps the original
+    read-everything-then-respond behaviour the older tests rely on.
     """
 
     def __init__(
@@ -24,9 +32,13 @@ class FakeClamd:
         *,
         version: str = "ClamAV 1.5.3/28059/Mon Jul 13 06:25:07 2026",
         scan_responder: Callable[[bytes], bytes] | None = None,
+        abort_stream_after_bytes: int | None = None,
+        answer_before_abort: bool = True,
     ) -> None:
         self.version = version
         self.scan_responder = scan_responder or (lambda data: b"stream: OK\0")
+        self.abort_stream_after_bytes = abort_stream_after_bytes
+        self.answer_before_abort = answer_before_abort
         self.received_stream_bytes: bytes | None = None
         self._server: asyncio.AbstractServer | None = None
 
@@ -58,6 +70,24 @@ class FakeClamd:
             writer.write(b"RELOADING\0")
         elif command == "zINSTREAM":
             buf = bytearray()
+            if self.abort_stream_after_bytes is not None:
+                # A-63-4: over-limit behaviour — clamd aborts MID-STREAM: it
+                # stops reading, optionally answers its own one-line error
+                # and closes the socket with the upload still in flight.
+                while len(buf) < self.abort_stream_after_bytes:
+                    length = int.from_bytes(await reader.readexactly(4), "big")
+                    if length == 0:
+                        break
+                    buf += await reader.readexactly(length)
+                self.received_stream_bytes = bytes(buf)
+                if self.answer_before_abort:
+                    writer.write(self.scan_responder(bytes(buf)))
+                    with contextlib.suppress(Exception):
+                        await writer.drain()
+                writer.close()
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
+                return
             while True:
                 length = int.from_bytes(await reader.readexactly(4), "big")
                 if length == 0:

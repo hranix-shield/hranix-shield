@@ -125,6 +125,16 @@ OSQUERY_CONNECTOR_NAME = "osquery"
 # still has one name to look at.
 _OSQUERYI_FALLBACK = "osqueryi"
 
+# A-63-2 (live full-stack finding, 2026-09-21): with the real stack up the
+# owner's machine had ~294 open connections — `process_open_sockets`/
+# `listening_ports` scans take osqueryi 3–6s there and more on a busy
+# machine, so the previous hard-wired `run_local_command` default (5s) timed
+# out, which the network console surfaced as a 500. The two table scans fed
+# by `fetch_network_console_data`/`fetch_listening_ports` get a generous
+# dashboard-scale budget; osquery's tiny introspection queries (processes
+# count, osquery_flags) keep the 5s default.
+OSQUERY_NETWORK_SCAN_TIMEOUT_S = 15.0
+
 
 def _vendored_osqueryi_path() -> Path:
     """Where each OS's native installer places its bundled `osqueryi`
@@ -239,22 +249,27 @@ def _to_int(value: Any) -> int | None:
         return None
 
 
-async def _query(sql: str) -> list[dict[str, Any]]:
+async def _query(sql: str, *, timeout: float = 5.0) -> list[dict[str, Any]]:
     """Runs one `osqueryi --json "<sql>"` one-shot query and returns its
     decoded rows. Never returns anything but a `list[dict]` — raises
     `OsqueryError` (see class docstring for `reason` values) on every other
     outcome, translated from the shared `_local_command.py` helper the same
     way `os_firewall.py`/`os_disk_encryption.py` already do.
 
+    `timeout` (A-63-2) is passed through to `run_local_command` — the
+    slow full-table socket scans (network console / perimeter ports) pass
+    `OSQUERY_NETWORK_SCAN_TIMEOUT_S`, every other caller keeps the
+    `run_local_command` default.
+
     `osqueryi = _resolve_osqueryi()` (A-24) — re-resolved on every call, not
     hoisted to a module-level constant, so that a vendored binary appearing/
     disappearing (or `is_packaged()` being monkeypatched mid-test-suite)
     never needs a process restart or module reload to take effect — the
-    same reasoning `app/config.py`'s own `resolved_*` properties already
+    same reasoning `app/config.py`'s own resolved_* properties already
     document for why they check `is_packaged()` fresh each time too."""
     osqueryi = _resolve_osqueryi()
     try:
-        returncode, stdout, stderr = await run_local_command(osqueryi, "--json", sql)
+        returncode, stdout, stderr = await run_local_command(osqueryi, "--json", sql, timeout=timeout)
     except LocalCommandNotFound as exc:
         raise OsqueryError(str(exc), reason="not_configured") from exc
     except LocalCommandTimedOut as exc:
@@ -283,8 +298,8 @@ async def fetch_network_console_data() -> dict[str, Any]:
     honest `connector.status`, never a 500 and never a fabricated empty-but-
     confident connections list."""
     try:
-        listening_rows = await _query(_LISTENING_PORTS_SQL)
-        connection_rows = await _query(_ACTIVE_CONNECTIONS_SQL)
+        listening_rows = await _query(_LISTENING_PORTS_SQL, timeout=OSQUERY_NETWORK_SCAN_TIMEOUT_S)
+        connection_rows = await _query(_ACTIVE_CONNECTIONS_SQL, timeout=OSQUERY_NETWORK_SCAN_TIMEOUT_S)
     except OsqueryError as exc:
         logger.warning("osquery (network): %s", exc)
         return {
@@ -458,7 +473,7 @@ async def fetch_listening_ports() -> dict[str, Any]:
     `fetch_*` in this module — a missing `osqueryi`/a permission problem is
     reported honestly, never a fabricated `0` or empty-but-confident list."""
     try:
-        rows = await _query(_LISTENING_PORTS_SQL)
+        rows = await _query(_LISTENING_PORTS_SQL, timeout=OSQUERY_NETWORK_SCAN_TIMEOUT_S)
     except OsqueryError as exc:
         logger.warning("osquery (perimeter open_ports): %s", exc)
         return {"connector": {"status": exc.reason}, "open_ports": None, "ports": []}

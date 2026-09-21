@@ -10,6 +10,10 @@ __pycache__/
 coverage.xml
 htmlcov/
 
+# Локальный build-venv Windows-сборки (шаг windows-build.yml, повторённый
+# вручную на Windows-машине разработки — см. отчёт-приёмка-windows-2026-09-19)
+/build-venv/
+
 # --- Env / секреты ---
 .env
 .env.local
@@ -27,6 +31,12 @@ data/*
 *.sqlite3
 logs/
 *.log
+
+# Dev-restic-репозиторий бэкапов: по умолчанию .env.example ведёт его в
+# infra/backups — репозиторий (снапшоты, индекс, ключи) не редистрибутив,
+# коммитить нельзя (см. аудит-2026-09-19 §8.1).
+infra/backups/*
+!infra/backups/.gitkeep
 
 # --- Локальные модели (LLM/ASR/TTS/эмбеддинги — качаются скриптом) ---
 models/
@@ -51,6 +61,17 @@ packaging/*/dist/
 # already-ignored dist/ bundle + the tracked debian/ scripts) — same
 # "rebuildable artifact, not a source file" reasoning as build/ and dist/.
 packaging/linux/deb-staging/
+# A-24/A-25: vendored osquery binary + Wazuh agent MSI + their extraction
+# scratch space, downloaded and unpacked from the official releases by each
+# OS's vendor-osquery.sh (macOS/Linux) / windows-build.yml (Windows) — a
+# rebuildable, large, binary artifact pinned by version/URL/sha256 IN the
+# tracked build scripts themselves, same "artifact not source" reasoning as
+# dist/build/ above, not committed for the same reason those aren't.
+packaging/*/vendor/
+# A-62: собранный selftest-инсталлятор (packaging/windows/test/
+# run-a62-selftest.sh) — rebuildable artifact, не исходник; шаблон
+# packaging/*/dist/ выше не покрывает вложенный test/dist/.
+packaging/windows/test/dist/
 
 # --- IDE / OS ---
 .vscode/
@@ -61,3 +82,9 @@ packaging/linux/deb-staging/
 *~
 .DS_Store
 Thumbs.db
+
+# --- GUI-прогон: скриншоты тестирования (не редистрибутив) ---
+gui-test-screenshots/
+
+# Секреты: бэкапы .env от ручных/автоматических мерджей (bootstrap A-60)
+.env.bak-*

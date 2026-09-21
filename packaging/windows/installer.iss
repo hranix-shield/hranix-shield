@@ -23,7 +23,7 @@
 ; in README.md, not hidden.
 
 #define MyAppName "Hranix Shield"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.1.2"
 #define MyAppPublisher "Hranix"
 #define MyAppExeName "Hranix Shield.exe"
 ; A-25: pinned to the SAME version as infra/security/wazuh/docker-
@@ -213,3 +213,11 @@ Filename: "msiexec.exe"; Parameters: "/i ""{tmp}\wazuh-agent-{#WazuhAgentVersion
 ; under {app} (Program Files), never touching per-user AppData at all, so
 ; this is the default behaviour here, not something this script has to
 ; opt into.
+
+; A-62: bootstrap-администратор панели создаётся самим инсталлятором
+; (генерация пароля, merge config.env, показ на финальной странице,
+; admin-credentials.txt при silent-установке). Вся [Code]-логика — в
+; installer-admin.iss (рядом), включаемом и selftest-инсталлятором
+; packaging/windows/test/a62-admin-selftest.iss — подробности и
+; обоснования в шапке того файла.
+#include "installer-admin.iss"

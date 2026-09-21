@@ -198,6 +198,17 @@ services:
       # enforces; startup fails loudly, not silently, if it's rejected).
       - API_USERNAME=${WAZUH_API_USERNAME:-wazuh-wui}
       - API_PASSWORD=${WAZUH_API_PASSWORD:?Set WAZUH_API_PASSWORD in infra/security/wazuh/.env (see .env.example there)}
+    # A-63-6: liveness = the manager's own REST API answering. The stock
+    # unauthenticated answer is exactly 401 (Unauthorized) — that IS "alive":
+    # 000 means the process is not answering at all, any other code is worth
+    # reading the logs for. start_period is generous because wazuh-manager
+    # genuinely takes a while to bring up all its daemons on every start.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://localhost:55000 | grep -q 401"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
     volumes:
       # This manager's OWN FIM/agent state (wazuh-db) — a named Docker
       # volume, NOT a bind-mount of any host path, same shape as
@@ -209,6 +220,14 @@ services:
       # what's checked into this repo.
       - ./config/ossec.conf:/wazuh-config-mount/etc/ossec.conf:ro
       - ./config/api.yaml:/wazuh-config-mount/api/configuration/api.yaml:ro
+      # A-63-6: manager-only filebeat config (see config/filebeat.yml) —
+      # the stock one points filebeat at the nonexistent wazuh.indexer:9200
+      # and retries its DNS forever (found live 2026-09-21: hundreds of
+      # «wazuh.indexer DNS lookup failure» lines per hour inside the manager
+      # container — the probable trigger of the API daemon's degradation/
+      # death; ossec.conf's own <indexer><enabled>no</enabled> does NOT
+      # touch filebeat, it is a separate daemon with its own config).
+      - ./config/filebeat.yml:/etc/filebeat/filebeat.yml:ro
       # Decision #2 above: ONLY these two of this project's OWN directories,
       # read-only, never the host's home directory or any other path.
       - ../../../data:/monitored/data:ro

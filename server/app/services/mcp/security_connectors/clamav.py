@@ -156,6 +156,14 @@ class ScanResult:
 
 def _parse_scan_response(text: str) -> ScanResult:
     text = text.strip().strip("\0").strip()
+    # A-63-4: clamd's over-`StreamMaxLength` answer — «INSTREAM size limit
+    # exceeded. ERROR» — used to fall through to the generic bare-`error`
+    # verdict with no extracted reason (and, when clamd slammed the socket
+    # shut mid-upload, the client never even saw this text at all, see
+    # scan_bytes). Match it explicitly so the raw reason is always carried
+    # through to the caller/log instead of an empty "clamd INSTREAM failed: ".
+    if "size limit exceeded" in text.lower():
+        return ScanResult(status="error", signature=None, raw=text)
     if text.endswith("OK"):
         return ScanResult(status="clean", signature=None, raw=text)
     if text.endswith("FOUND"):
@@ -254,8 +262,22 @@ class ClamdClient:
     async def scan_bytes(self, data: bytes) -> ScanResult:
         """`INSTREAM` a file already read into memory — see this module's
         docstring for exactly why this is the only scan primitive this
-        connector uses (never `SCAN <path>`)."""
+        connector uses (never `SCAN <path>`).
+
+        A-63-4 (live full-stack finding, 2026-09-21): for a stream over
+        clamd's `StreamMaxLength` clamd does NOT read the upload to its end
+        — it answers `INSTREAM size limit exceeded. ERROR` and SLAMS the
+        connection shut mid-upload. The resulting reset used to surface as
+        `ClamdError("clamd INSTREAM failed: ")` — an EMPTY message, the
+        owner's live symptom on larger Downloads/*.zip files — losing
+        clamd's actual explanation. Now: whatever answer made it through
+        before the reset is drained and parsed (a size-limit answer becomes
+        an honest `error` verdict carrying the reason, which the scan loops
+        log and skip WITHOUT counting as a clamd failure), and only a reset
+        with no recoverable answer raises `ClamdError` — whose message now
+        always names the exception class, never empty again."""
         reader, writer = await self._open()
+        response = b""
         try:
             writer.write(b"zINSTREAM\0")
             for offset in range(0, len(data), _INSTREAM_CHUNK_SIZE):
@@ -266,7 +288,16 @@ class ClamdClient:
             await writer.drain()
             response = await asyncio.wait_for(reader.read(4096), timeout=self._timeout)
         except (OSError, asyncio.TimeoutError) as exc:
-            raise ClamdError(f"clamd INSTREAM failed: {exc}", reason="unreachable") from exc
+            recovered = b""
+            with contextlib.suppress(OSError, asyncio.TimeoutError):
+                recovered = await asyncio.wait_for(reader.read(4096), timeout=1.0)
+            combined = (response + recovered).decode("utf-8", errors="replace")
+            if "size limit exceeded" in combined.lower():
+                return _parse_scan_response(combined)
+            raise ClamdError(
+                f"clamd INSTREAM failed: {type(exc).__name__}: {exc or '(connection reset)'}",
+                reason="unreachable",
+            ) from exc
         finally:
             await self._close(writer)
         return _parse_scan_response(response.decode("utf-8", errors="replace"))
@@ -1439,17 +1470,35 @@ async def update_clamav_databases(*, settings: Settings | None = None) -> dict[s
     the outside, and does not pretend to)."""
     settings = settings or get_settings()
     docker_binary = _resolve_docker_binary()
-    script = _build_db_update_script(docker_binary)
 
-    with tempfile.TemporaryDirectory(prefix="hranix-clamav-freshclam-") as tmp:
-        script_path = Path(tmp) / "hranix-clamav-freshclam.sh"
-        script_path.write_text(script, encoding="utf-8")
+    # A-63 follow-up (live finding, 2026-09-21): the bash-script path below
+    # is POSIX-only — on Windows `/bin/bash` does not exist, so the button
+    # failed instantly with cmd exit 3 «Система не может найти указанный
+    # путь» (found live in the installed app's log). On Windows the same
+    # single step runs DIRECTLY as the elevated command — `docker exec
+    # <container> freshclam` needs no script file, and since the A-63-1
+    # follow-up the quoted `C:\Program Files\...` docker path survives
+    # cmd's quote-stripping (the /S wrapper). POSIX keeps the script file
+    # (shlex-quoting of the docker path matters there).
+    if platform.system() == "Windows":
         result = await elevated_run(
-            ["/bin/bash", str(script_path)],
+            [docker_binary, "exec", CLAMAV_CONTAINER_NAME, "freshclam"],
             reason_ru=_DB_UPDATE_REASON_RU,
             reason_en=_DB_UPDATE_REASON_EN,
             timeout=_DB_UPDATE_ELEVATED_TIMEOUT,
         )
+    else:
+        script = _build_db_update_script(docker_binary)
+
+        with tempfile.TemporaryDirectory(prefix="hranix-clamav-freshclam-") as tmp:
+            script_path = Path(tmp) / "hranix-clamav-freshclam.sh"
+            script_path.write_text(script, encoding="utf-8")
+            result = await elevated_run(
+                ["/bin/bash", str(script_path)],
+                reason_ru=_DB_UPDATE_REASON_RU,
+                reason_en=_DB_UPDATE_REASON_EN,
+                timeout=_DB_UPDATE_ELEVATED_TIMEOUT,
+            )
     if result.status != "ok":
         _raise_for_db_update_result(result)
 

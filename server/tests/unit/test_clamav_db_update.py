@@ -78,6 +78,10 @@ def _fixed_docker_binary(monkeypatch: pytest.MonkeyPatch):
 @pytest.mark.unit
 async def test_update_databases_ok_runs_freshclam_then_a_fresh_readback(monkeypatch: pytest.MonkeyPatch):
     captured: dict = {}
+    # A-63 follow-up: this test pins the POSIX (macOS/Linux) contract — the
+    # bash-script path. Windows now takes its own direct docker-exec branch
+    # (see the dedicated test below), so pin the platform explicitly.
+    monkeypatch.setattr(clamav_module.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(
         clamav_module,
         "elevated_run",
@@ -173,6 +177,36 @@ async def test_update_databases_script_execs_freshclam_inside_the_container():
     assert "docker exec" in script or "/usr/local/bin/docker exec" in script
     assert clamav_module.CLAMAV_CONTAINER_NAME in script
     assert "freshclam" in script
+
+
+@pytest.mark.unit
+async def test_update_databases_on_windows_runs_docker_exec_freshclam_directly(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A-63 follow-up (live finding 2026-09-21): on Windows there is no
+    `/bin/bash`, so the POSIX script-file path failed instantly (cmd exit 3,
+    «Система не может найти указанный путь») and the «Обновить базы» button
+    could never work. On Windows the elevated command is the docker exec
+    directly — no temp script — with the resolved (quoted-at-the-cmd-layer)
+    docker binary."""
+    captured: dict = {}
+    monkeypatch.setattr(clamav_module.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(clamav_module, "_resolve_docker_binary", lambda: "docker")
+    monkeypatch.setattr(
+        clamav_module,
+        "elevated_run",
+        _fake_elevated_run(ElevatedRunResult(status="ok", stdout=""), captured=captured),
+    )
+    monkeypatch.setattr(
+        clamav_module, "fetch_av_clamav_data", _fake_fetch_av_clamav_data(after="2026-08-02T12:00:00")
+    )
+
+    result = await update_clamav_databases()
+
+    assert result["status"] == "ok"
+    assert captured["command"] == [
+        "docker", "exec", clamav_module.CLAMAV_CONTAINER_NAME, "freshclam",
+    ]
 
 
 @pytest.mark.unit

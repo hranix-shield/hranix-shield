@@ -151,8 +151,19 @@ async def test_bootstrap_happy_path_generates_files_and_writes_config(
     assert "655360" in compose
     assert "/monitored/data:ro" in compose
     assert "/monitored/logs:ro" in compose
+    # A-63-6: healthcheck менеджера (REST API 401 = жив) и filebeat-маунт,
+    # уводящий filebeat от несуществующего wazuh.indexer в локальный файл.
+    assert "healthcheck:" in compose
+    assert "grep -q 401" in compose
+    assert "/etc/filebeat/filebeat.yml:ro" in compose
     assert (stack_dir / "wazuh" / "ossec.conf").is_file()
     assert (stack_dir / "wazuh" / "api.yaml").is_file()
+    # A-63-6: сгенерированный filebeat.yml — manager-only (никаких сетевых
+    # вызовов: output.file вместо elasticsearch, модули собирать нечего).
+    filebeat = (stack_dir / "wazuh" / "filebeat.yml").read_text(encoding="utf-8")
+    assert "output.file:" in filebeat
+    assert "elasticsearch" not in filebeat
+    assert "wazuh.indexer" not in filebeat
 
     # config.env: все десять ключей записаны (в т.ч. CLAMAV_ENABLED=True —
     # без него clamav-коннектор честно остаётся not_configured).

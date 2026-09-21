@@ -257,6 +257,7 @@ def _render_compose(stack_dir: Path, data_dir: Path, log_dir: Path, wazuh_api_po
     парсера volume-строк."""
     wazuh_conf = (stack_dir / "wazuh" / "ossec.conf").as_posix()
     wazuh_api = (stack_dir / "wazuh" / "api.yaml").as_posix()
+    wazuh_filebeat = (stack_dir / "wazuh" / "filebeat.yml").as_posix()
     monitored_data = data_dir.as_posix()
     monitored_logs = log_dir.as_posix()
     return f"""\
@@ -339,6 +340,15 @@ services:
       # Образ сам создаёт/обновляет REST API пользователя при старте.
       - API_USERNAME=${{WAZUH_API_USERNAME:-wazuh-wui}}
       - API_PASSWORD=${{WAZUH_API_PASSWORD:?WAZUH_API_PASSWORD is required in stack.env}}
+    # A-63-6: живой признак менеджера — его собственный REST API. Стоковый
+    # ответ без токена — ровно 401 (Unauthorized), это и есть «жив»:
+    # 000 = процесс не отвечает, любой код ≠ 401 — повод смотреть логи.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{{http_code}}' http://localhost:55000 | grep -q 401"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
     volumes:
       # Собственное FIM/agent-состояние менеджера — named volume.
       - wazuh-var:/var/ossec/queue
@@ -346,6 +356,13 @@ services:
       # при каждом старте контейнера — WAZUH_CONFIG_MOUNT-механизм).
       - {wazuh_conf}:/wazuh-config-mount/etc/ossec.conf:ro
       - {wazuh_api}:/wazuh-config-mount/api/configuration/api.yaml:ro
+      # A-63-6: manager-only — filebeat менеджера стоково шлёт алерты на
+      # https://wazuh.indexer:9200, которого в этом развёртывании нет
+      # (Decision #1), и без этого маунта вечно ретраит DNS (живой лог:
+      # сотни «wazuh.indexer DNS lookup failure» в час — вероятная причина
+      # деградации/смерти API-демона). Наш конфиг уводит output в
+      # локальный файл контейнера, сеть не трогает.
+      - {wazuh_filebeat}:/etc/filebeat/filebeat.yml:ro
       # Единственные bind-маунты — два каталога самого приложения, только
       # чтение (решение #2 в infra/security/wazuh/docker-compose.yml).
       - {monitored_data}:/monitored/data:ro
@@ -580,6 +597,38 @@ https:
   enabled: no
 """
 
+# A-63-6: filebeat внутри wazuh-manager стоково настроен слать алерты на
+# https://wazuh.indexer:9200 — в manager-only развёртывании (Decision #1
+# infra/security/wazuh/docker-compose.yml) такого хоста нет, и filebeat
+# вечно ретраит DNS (живое подтверждение 2026-09-21: сотни «wazuh.indexer
+# DNS lookup failure» в час; вероятная причина деградации/смерти API-демона
+# владельца). Этот конфиг меняет только output — локальный файл контейнера,
+# ни одного сетевого вызова; вход — ровно один локальный filestream по
+# alerts.json самого менеджера (filebeat с нулём inputs не стартует —
+# «no modules or inputs enabled», живая проверка `filebeat test config`,
+# сообщение идентично для стокового конфига). ossec.conf
+# `<indexer><enabled>no</enabled>` управляет интеграцией ossec-уровня и уже
+# стоит в шаблоне; filebeat — отдельный демон со своим конфигом.
+_WAZUH_FILEBEAT_YAML = """\
+# A-63-6: сгенерировано services/stack/bootstrap.py. Manager-only
+# (infra/security/wazuh/docker-compose.yml, Decision #1): indexer'а нет,
+# поэтому отправка в Elasticsearch и setup-шаблоны убраны — output.file в
+# локальный лог контейнера, ни одного сетевого вызова. Вход — локальный
+# filestream по alerts.json менеджера (filebeat с нулём inputs не
+# стартует — живая проверка `filebeat test config`).
+filebeat.inputs:
+  - type: filestream
+    id: wazuh-alerts-local
+    enabled: true
+    paths:
+      - /var/ossec/logs/alerts/alerts.json
+output.file:
+  path: /var/log/filebeat
+  filename: filebeat-alerts
+  rotate_every_kb: 10240
+  number_of_files: 2
+"""
+
 
 # ---------------------------------------------------------------------------
 # Шаги bootstrap. Каждый шаг — функция, возвращающая StepResult; исключения
@@ -692,6 +741,9 @@ def _step_compose_files(
         )
         (stack_dir / "wazuh" / "api.yaml").write_text(
             _WAZUH_API_YAML, encoding="utf-8"
+        )
+        (stack_dir / "wazuh" / "filebeat.yml").write_text(
+            _WAZUH_FILEBEAT_YAML, encoding="utf-8"
         )
     except OSError as exc:
         return StepResult("compose_files", "error", f"write_failed: {exc}")

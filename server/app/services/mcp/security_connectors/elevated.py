@@ -277,11 +277,36 @@ async def _elevated_run_windows(
     this (unprivileged) process across the UAC boundary — `Start-Process`
     launches a detached process — so the elevated `cmd.exe` redirects them
     to two temp files instead, read back here afterwards. NTFS permissions
-    are per-user, not per-integrity-level: the same signed-in user's own
-    unprivileged process can read a file its own elevated process just
-    wrote (standard, documented Windows ACL behaviour — UAC's "no write
-    up" mandatory-integrity rule restricts writes across levels, not
-    reads, for the same user account).
+    are per-user, not per-integrity-level, BUT the redirect (`1>`) makes the
+    ELEVATED process the file's creator, and the owner/ACL it stamps on the
+    file can leave the same user's unprivileged token without read access —
+    found live 2026-09-21 (owner's machine, full stack: «Проверить
+    обновления» → «Не удалось выполнить действие с повышенными правами»,
+    read_text after a successful run raised PermissionError). A-63-1 fix:
+    the elevated command itself grants the current user Full control on
+    both redirect files as its LAST step (`icacls <file> /grant *<SID>:F`,
+    the SID resolved non-elevated in this same script and spliced into the
+    elevated argv) — icacls's own failure is swallowed, so a host without a
+    working icacls degrades to the pre-A-63-1 behaviour instead of a new
+    one. The exit-code file is NOT affected (it is written by THIS
+    non-elevated PowerShell after Start-Process returns, not by the
+    elevated process). As a second line of defence, a PermissionError on
+    read-back is reported as an honest `failed` status, never raised.
+
+    The elevated argv now runs under `cmd /v:on /s` with the WHOLE command
+    line wrapped in an outer pair of quotes (`/s` preserves them, cmd's own
+    quote-stripping rule would otherwise eat the first one and break any
+    caller whose executable path contains spaces — found live 2026-09-21:
+    `_resolve_docker_binary()`'s `"C:\Program Files\Docker\...\docker.exe"`
+    made the elevated cmd exit 9009 "'...' is not recognized" while the
+    very same command ran fine non-elevated). Delayed expansion then lets
+    `set EC=!ERRORLEVEL!` capture the inner command's exit code AFTER it
+    runs and `exit /b !EC!` hands it back as cmd's own exit code — keeping
+    `$p.ExitCode`'s meaning identical to the pre-A-63-1 single-command
+    shape. Documented trade-off: a caller argument containing a literal `!`
+    would be eaten by delayed expansion (none of this codebase's callers
+    pass one; the same assumption `_quote_for_cmd`'s docstring already
+    states about embedded quotes).
     """
     logger.info("elevated_run (windows, UAC): %s / %s", reason_ru, reason_en)
     with tempfile.TemporaryDirectory(prefix="hranix-elevated-") as tmp:
@@ -290,12 +315,26 @@ async def _elevated_run_windows(
         stderr_path = tmp_path / "stderr.txt"
         exit_code_path = tmp_path / "exitcode.txt"
         inner_command = " ".join(_quote_for_cmd(part) for part in command)
+        # `' + $sid + '` splices the PS-computed SID into the middle of the
+        # one-string ArgumentList (a PS string-literal break + concatenation,
+        # not a Python f-string interpolation) — the SID must come from THIS
+        # user's real token at run time, the elevated child only ever sees
+        # the final `*S-1-...-...:F` argument.
+        acl_grant = (
+            f' & icacls "{stdout_path}" /grant *' + "' + $sid + '" + ":F >nul 2>&1"
+            f' & icacls "{stderr_path}" /grant *' + "' + $sid + '" + ":F >nul 2>&1"
+        )
         ps_script = (
             "$ErrorActionPreference = 'Stop'\n"
             "try {\n"
-            "  $p = Start-Process -FilePath 'cmd.exe' -ArgumentList "
-            f"'/c {inner_command} 1> \"{stdout_path}\" 2> \"{stderr_path}\"' "
-            "-Verb RunAs -Wait -PassThru -WindowStyle Hidden\n"
+            "  $sid = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value\n"
+            "  $cmdArgs = '/v:on /s /c \" " + inner_command
+            + f' 1> "{stdout_path}" 2> "{stderr_path}"'
+            + " & set EC=!ERRORLEVEL!"
+            + acl_grant
+            + " & exit /b !EC! \"'\n"
+            "  $p = Start-Process -FilePath 'cmd.exe' -ArgumentList $cmdArgs"
+            " -Verb RunAs -Wait -PassThru -WindowStyle Hidden\n"
             f"  $p.ExitCode | Out-File -FilePath '{exit_code_path}' -Encoding ascii\n"
             "} catch {\n"
             f"  Write-Output '{_WINDOWS_CANCELLED_MARKER}'\n"
@@ -325,12 +364,31 @@ async def _elevated_run_windows(
         if _WINDOWS_CANCELLED_MARKER in stdout or _WINDOWS_CANCELLED_MARKER in stderr:
             return ElevatedRunResult(status="cancelled", stdout=stdout, stderr=stderr)
         if returncode != 0:
+            # A-63 (live diagnostics, 2026-09-21): callers' UI promises "см.
+            # логи сервера" — so the PowerShell-level evidence (a raised
+            # script writes its own error text to stderr/stdout) MUST
+            # actually land in the server log, not vanish with the temp dir.
+            logger.warning(
+                "elevated_run (windows): powershell exited %s; stdout=%r; stderr=%r",
+                returncode, stdout[:500], stderr[:500],
+            )
             return ElevatedRunResult(status="failed", stdout=stdout, stderr=stderr)
 
-        inner_stdout = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else ""
-        inner_stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else ""
-        inner_exit = exit_code_path.read_text(encoding="utf-8").strip() if exit_code_path.exists() else ""
+        try:
+            inner_stdout = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else ""
+            inner_stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else ""
+            inner_exit = exit_code_path.read_text(encoding="utf-8").strip() if exit_code_path.exists() else ""
+        except PermissionError as exc:
+            logger.warning("elevated_run (windows): read-back of the elevated output failed: %s", exc)
+            return ElevatedRunResult(
+                status="failed",
+                stderr=f"the elevated command's output could not be read back: {exc}",
+            )
         if inner_exit and inner_exit != "0":
+            logger.warning(
+                "elevated_run (windows): elevated command exited %s; stdout=%r; stderr=%r",
+                inner_exit, inner_stdout[:500], inner_stderr[:500],
+            )
             return ElevatedRunResult(
                 status="failed", stdout=inner_stdout, stderr=inner_stderr or f"exit code {inner_exit}"
             )

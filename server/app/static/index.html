@@ -112,6 +112,13 @@
       <div class="con-head">
         <div class="con-title"><span class="con-ic" id="conIcon"></span><b id="conTitle"></b></div>
         <span class="con-eng" id="conEngine"></span>
+        <!-- A-63-5: живая находка первого тестирования с полным стеком —
+             при переключении консоли внешние вызовы (osquery/Wazuh) занимают
+             секунды, и всё это время экран показывал заголовок и блоки
+             ПРЕДЫДУЩЕЙ консоли («висит информация от старого»). Эта метка
+             включается openConsole() сразу и гасится renderConsole()/
+             обработчиками ошибок, когда пришли настоящие данные. -->
+        <span class="con-updating" id="conUpdating" hidden data-ru="Обновляется…" data-en="Refreshing…">Обновляется…</span>
         <button class="con-power" id="conPower" onclick="handleTogglePower()">…</button>
       </div>
 

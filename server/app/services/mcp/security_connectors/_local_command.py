@@ -21,6 +21,7 @@ shared across two modules here instead of kept private to one.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import subprocess
 import sys
 
@@ -66,7 +67,15 @@ async def run_local_command(*args: str, timeout: float = 5.0) -> tuple[int, str,
     try:
         stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=timeout)
     except TimeoutError as exc:
-        process.kill()
+        # A-63-2 (live full-stack finding, 2026-09-21): a child that exits
+        # between `wait_for`'s timeout and our kill is already gone — the
+        # kill then raises ProcessLookupError (and Windows' asyncio can
+        # surface the same already-dead child as ChildProcessError), which
+        # used to escape this helper and 500 the caller's endpoint. The
+        # timeout itself is still reported below, unchanged.
+        # clamav.py's folder-pick runner established this suppress shape.
+        with contextlib.suppress(ProcessLookupError, ChildProcessError):
+            process.kill()
         await process.wait()
         raise LocalCommandTimedOut(f"{args[0]!r} timed out after {timeout}s") from exc
 

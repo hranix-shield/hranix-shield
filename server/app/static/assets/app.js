@@ -979,12 +979,13 @@ var CONSOLE_META = {
       // CrowdSec-ban confirmation.
       {
         id: 'block_all_incoming', danger: true,
+        busyRu: 'Блокируем входящие…', busyEn: 'Blocking incoming…',
         ru: '🔒 Заблокировать все входящие', en: '🔒 Block all incoming',
         tipRu: 'Запросит пароль администратора (разовое системное окно — права не сохраняются после выполнения) и заблокирует ВЕСЬ входящий трафик. Может отрезать легитимные локальные сервисы (общий доступ к файлам, удалённые подключения).',
         tipEn: 'Prompts for an administrator password (a one-time system dialog — no privilege is kept afterward) and blocks ALL incoming traffic. May cut off legitimate local services (file sharing, remote connections).',
       },
-      { id: 'unblock_all_incoming', ru: 'Разблокировать все входящие', en: 'Unblock all incoming' },
-      { id: 'rescan_ports', ru: 'Пересканировать порты', en: 'Rescan ports' },
+      { id: 'unblock_all_incoming', ru: 'Разблокировать все входящие', en: 'Unblock all incoming', busyRu: 'Снимаем блокировку…', busyEn: 'Unblocking…' },
+      { id: 'rescan_ports', ru: 'Пересканировать порты', en: 'Rescan ports', busyRu: 'Пересканируем порты…', busyEn: 'Rescanning ports…' },
       // A-36: previously a disabled placeholder (A-28/A-31) — now a real
       // action, same one-time elevated-prompt mechanism as
       // block_all_incoming above. A second click (while the list is
@@ -992,6 +993,7 @@ var CONSOLE_META = {
       // handleShowQuarantine already uses for `av`'s quarantine list.
       {
         id: 'firewall_rules',
+        busyRu: 'Читаем правила…', busyEn: 'Reading rules…',
         ru: 'Правила фаервола', en: 'Firewall rules',
         tipRu: 'Запросит пароль администратора (разовое системное окно) и покажет реальный вывод «pfctl -s rules» (macOS) / аналог на Linux/Windows.',
         tipEn: 'Prompts for an administrator password (a one-time system dialog) and shows the real "pfctl -s rules" (macOS) output / the Linux/Windows equivalent.',
@@ -1100,7 +1102,7 @@ var CONSOLE_META = {
       // handleApplyScenarioUpdates below).
       {
         id: 'scenario_updates_check', ru: 'Проверить обновления', en: 'Check for updates',
-        tipRu: 'A-45 (пересматривает решение A-43): запросит пароль администратора (разовое системное окно) и покажет РЕАЛЬНЫЙ план CrowdSec (cscli hub upgrade --dry-run) — что будет установлено, ДО того как это установится. Ничего не устанавливается на этом шаге. Установка — отдельный следующий шаг («Применить обновления»), появляется только если план показал реальные апгрейды. Честный остаток риска: CrowdSec всё ещё скачивает каталог с hub.crowdsec.net при каждой проверке — если сам hub.crowdsec.net скомпрометирован, локально это обнаружить нельзя (см. README раздел 6.2).',
+        busyRu: 'Проверяем обновления…', busyEn: 'Checking for updates…',        tipRu: 'A-45 (пересматривает решение A-43): запросит пароль администратора (разовое системное окно) и покажет РЕАЛЬНЫЙ план CrowdSec (cscli hub upgrade --dry-run) — что будет установлено, ДО того как это установится. Ничего не устанавливается на этом шаге. Установка — отдельный следующий шаг («Применить обновления»), появляется только если план показал реальные апгрейды. Честный остаток риска: CrowdSec всё ещё скачивает каталог с hub.crowdsec.net при каждой проверке — если сам hub.crowdsec.net скомпрометирован, локально это обнаружить нельзя (см. README раздел 6.2).',
         tipEn: 'A-45 (revises the A-43 decision): prompts for an administrator password (a one-time system dialog) and shows CrowdSec\'s REAL plan (cscli hub upgrade --dry-run) — what would be installed, before it is installed. Nothing is installed at this step. Installing is a separate following step ("Apply updates"), shown only if the plan shows real upgrades. Honest residual risk: CrowdSec still downloads its catalogue from hub.crowdsec.net on every check — if hub.crowdsec.net itself were compromised, no local check could catch that (see README section 6.2).',
       },
       // A-44: «Добавить в белый список» is no longer a disabled placeholder
@@ -1197,8 +1199,8 @@ var CONSOLE_META = {
     // why quarantine_count was chosen over a "files scanned" count).
     chartTitle: { ru: 'В карантине · 7 дней', en: 'Quarantined items · 7 days' },
     actions: [
-      { id: 'quick_scan', ru: 'Быстрая проверка', en: 'Quick scan' },
-      { id: 'full_scan', ru: 'Полная проверка', en: 'Full scan' },
+      { id: 'quick_scan', ru: 'Быстрая проверка', en: 'Quick scan', busyRu: 'Сканирование…', busyEn: 'Scanning…' },
+      { id: 'full_scan', ru: 'Полная проверка', en: 'Full scan', busyRu: 'Сканирование…', busyEn: 'Scanning…' },
       // Замечание пользователя (2026-08-02): «Проверить папку» переехала
       // сюда из отдельной инлайн-секции — открывает модалку с реальным
       // нативным выбором папки (см. index.html's avCustomScanModalOverlay,
@@ -1212,7 +1214,7 @@ var CONSOLE_META = {
       // The old label implied the more powerful (and untrue) capability.
       {
         id: 'reload_databases', ru: 'Перечитать базы', en: 'Reread databases',
-        tipRu: 'Перечитывает уже скачанные на диск базы сигнатур — НЕ скачивает новые из интернета.',
+        busyRu: 'Перечитываем базы…', busyEn: 'Rereading databases…',        tipRu: 'Перечитывает уже скачанные на диск базы сигнатур — НЕ скачивает новые из интернета.',
         tipEn: 'Rereads signature databases already downloaded to disk — does NOT download new ones from the internet.',
       },
       // Замечание пользователя (2026-08-02): это — то самое «скачать новые
@@ -1223,7 +1225,7 @@ var CONSOLE_META = {
       // функции собственный докстринг за причиной).
       {
         id: 'update_databases', ru: '⬇️ Обновить базы', en: '⬇️ Update databases',
-        tipRu: 'Запросит пароль администратора (разовое системное окно) и скачает свежие базы сигнатур из интернета через freshclam внутри контейнера ClamAV.',
+        busyRu: 'Обновляем базы…', busyEn: 'Updating databases…',        tipRu: 'Запросит пароль администратора (разовое системное окно) и скачает свежие базы сигнатур из интернета через freshclam внутри контейнера ClamAV.',
         tipEn: 'Prompts for an administrator password (a one-time system dialog) and downloads fresh signature databases from the internet via freshclam inside the ClamAV container.',
       },
       { id: 'show_quarantine', ru: 'Карантин', en: 'Quarantine' },
@@ -1332,8 +1334,8 @@ var CONSOLE_META = {
     listKey: 'modules',
     listTitle: { ru: 'Модули системы', en: 'System modules' },
     actions: [
-      { id: 'create_snapshot', ru: '💾 Создать полную копию', en: '💾 Create full backup' },
-      { id: 'restore_system', ru: 'Восстановить систему…', en: 'Restore system…' },
+      { id: 'create_snapshot', ru: '💾 Создать полную копию', en: '💾 Create full backup', busyRu: 'Создаём копию…', busyEn: 'Creating backup…' },
+      { id: 'restore_system', ru: 'Восстановить систему…', en: 'Restore system…', busyRu: 'Восстанавливаем…', busyEn: 'Restoring…' },
       // No `id` (yet): unlike the two above, there is no external-storage
       // target implemented in Phase 0 (§7.1 wants >=2 storages, local +
       // NAS/external — not built) — this one stays a disabled placeholder
@@ -1381,7 +1383,7 @@ var CONSOLE_META = {
       // deployment's actual manager (see wazuh.py's WazuhClient.trigger_syscheck
       // docstring: the real request shape turned out to differ from the
       // Wazuh REST API's own documented one).
-      { id: 'trigger_syscheck', ru: 'Запустить FIM-скан', en: 'Run FIM scan' },
+      { id: 'trigger_syscheck', ru: 'Запустить FIM-скан', en: 'Run FIM scan', busyRu: 'Запускаем FIM-скан…', busyEn: 'Running FIM scan…' },
       // A-30: universal export mechanism (server/app/services/security_console_export.py),
       // shared with `network`'s identical action below via the same
       // ACTION_HANDLERS.export_log handler — not two separate code paths.
@@ -1596,6 +1598,24 @@ var lastConsoleData = null;
 async function openConsole(id){
   lastConsoleId = id;
   lastConsoleData = null;
+  // A-63-5 (live full-stack finding, 2026-09-21 — «висит информация от
+  // старого»): the first fetch of a console can take seconds (real
+  // osquery/Wazuh calls with the full stack up), and until then the screen
+  // showed the PREVIOUS console's header and data blocks. Now: the header
+  // switches immediately (title/icon from CONSOLE_META, engine «…»), the
+  // previous console's data blocks are hidden outright, and a pulsing
+  // «Обновляется…» label fills the gap until the real render (or the error
+  // handlers) turn it off.
+  var meta = CONSOLE_META[id];
+  var lang = currentLang();
+  document.getElementById('conIcon').textContent = meta ? meta.icon : '';
+  document.getElementById('conTitle').textContent = meta ? meta.title[lang] : '';
+  document.getElementById('conEngine').textContent = '…';
+  document.getElementById('conUpdating').hidden = false;
+  ['conListSection', 'conChartCard', 'conMapCard'].forEach(function(blockId){
+    var block = document.getElementById(blockId);
+    if(block) block.hidden = true;
+  });
   // A-27: a fresh console open always starts with the quarantine panel
   // collapsed and any previous console's full-scan poll stopped — neither
   // should leak across console switches (e.g. leaving `av` mid-full-scan
@@ -1655,6 +1675,8 @@ async function openConsole(id){
       var code = (body.detail && body.detail.error) || 'unknown_error';
       errBox.textContent = translateError(code);
       errBox.hidden = false;
+      // A-63-5: the real data never arrives on this path — stop the label.
+      document.getElementById('conUpdating').hidden = true;
       return;
     }
     lastConsoleData = await res.json();
@@ -1677,6 +1699,8 @@ async function openConsole(id){
   } catch(e){
     errBox.textContent = translateError('network_error');
     errBox.hidden = false;
+    // A-63-5: no render will follow a network-level failure — stop the label.
+    document.getElementById('conUpdating').hidden = true;
   }
 }
 
@@ -1702,6 +1726,16 @@ function closeConsole(){
 var NETWORK_POLL_INTERVAL_MS = 5000;
 var networkPollTimer = null;
 
+// A-63-3 (live full-stack finding, 2026-09-21): a network fetch that takes
+// LONGER than the 5s poll interval (a slow osqueryi scan under load — on
+// the owner's machine it could exceed even 15s) used to stack: every tick
+// fired a fresh request while the previous ones were still running, the
+// parallel osqueryi children then starved the machine and timed each other
+// out — a self-inflicted `unreachable` storm that, among other things,
+// blanked the connections map. Skip a tick entirely while the previous
+// request is still in flight; the interval keeps ticking either way.
+var networkRefreshInFlight = false;
+
 function stopNetworkPolling(){
   if(networkPollTimer){ clearInterval(networkPollTimer); networkPollTimer = null; }
 }
@@ -1716,18 +1750,30 @@ async function refreshNetworkConsole(){
   // having been called, self-heal by stopping instead of re-fetching/
   // re-rendering a console that is no longer on screen.
   if(lastConsoleId !== 'network'){ stopNetworkPolling(); return; }
+  if(networkRefreshInFlight){ return; }
+  networkRefreshInFlight = true;
   try{
     var res = await apiFetch(CONSOLE_ROUTES.network);
     if(!res.ok) return;
     lastConsoleData = await res.json();
     renderConsole(); // rebuilds #conList (the connections table) too — does not touch #conActionStatus
   } catch(e){ /* network hiccup — keep showing the last known console data, next tick retries */ }
+  finally {
+    networkRefreshInFlight = false;
+  }
 }
 
 function renderConsole(){
   if(!lastConsoleId || !lastConsoleData) return;
   var meta = CONSOLE_META[lastConsoleId];
   var lang = currentLang();
+
+  // A-63-5: real data has arrived — the «Обновляется…» label's job is done
+  // (openConsole turned it on; every render path — first load, refresh
+  // button, auto-poll — lands here, so this is the single reliable place
+  // to turn it off).
+  var updatingLabel = document.getElementById('conUpdating');
+  if(updatingLabel) updatingLabel.hidden = true;
 
   document.getElementById('conIcon').textContent = meta.icon;
   document.getElementById('conTitle').textContent = meta.title[lang];
@@ -1751,6 +1797,10 @@ function renderConsole(){
   // banner; openConsole() already resets `conError` on every open.
   var connErrBox = document.getElementById('conError');
   var connectorLines = [];
+  // A-63-7: when the banner's os_counters line is the honest
+  // `not_configured` (always true on Windows), the whole banner gets the
+  // full explanation as its tooltip — the line itself stays short.
+  var osCountersBannerTip = '';
   if(lastConsoleData.connector && lastConsoleData.connector.status !== 'ok'){
     // A-55: a connector MAY carry its own machine-readable `reason` (the
     // backup console's backup_connector_status does) — prefer that specific,
@@ -1772,6 +1822,9 @@ function renderConsole(){
         var errorKey = (key === 'firewall_rules' && c.status === 'permission_denied')
           ? 'connector_permission_denied_firewall_rules'
           : 'connector_' + c.status;
+        if(key === 'os_counters' && c.status === 'not_configured'){
+          osCountersBannerTip = osCountersHint();
+        }
         connectorLines.push(label + ': ' + translateError(errorKey));
       }
     });
@@ -1806,8 +1859,10 @@ function renderConsole(){
   }
   if(connectorLines.length){
     connErrBox.textContent = connectorLines.join(' · ');
+    connErrBox.title = osCountersBannerTip || '';
     connErrBox.hidden = false;
   } else {
+    connErrBox.title = '';
     connErrBox.hidden = true;
   }
 
@@ -2024,7 +2079,11 @@ function renderConsole(){
   if(lastConsoleId === 'network'){
     var geoipStatus = (lastConsoleData.connectors && lastConsoleData.connectors.geoip
       && lastConsoleData.connectors.geoip.status) || 'not_configured';
-    renderConnectionsMap(lastConsoleData.connections || [], geoipStatus);
+    renderConnectionsMap(
+      lastConsoleData.connections || [],
+      geoipStatus,
+      (lastConsoleData.connector || {}).status
+    );
   } else {
     mapCard.hidden = true;
   }
@@ -2181,7 +2240,18 @@ function renderConsole(){
       btn.title = translateError(backupConnectorReason);
     } else if(handler){
       btn.disabled = false;
-      btn.onclick = function(){ handler(btn); };
+      // A-63-5 (owner feedback, live 2026-09-21): long elevated actions
+      // (freshclam, cscli, netsh …) gave NO feedback while running — the
+      // button just sat there and the operator could not tell click-fail
+      // from "working". Wrap every real handler: while its promise runs,
+      // the button shows a pulsating «Выполняется…» (or the action's own
+      // more specific busyRu/busyEn wording) and is disabled against
+      // double-clicks; the original label is restored when the promise
+      // settles (or immediately for non-promise handlers).
+      attachButtonBusyHandler(
+        btn, handler,
+        lang === 'ru' ? (action.busyRu || 'Выполняется…') : (action.busyEn || 'Working…')
+      );
       // A-27/A-23 pattern: an enabled action can still carry an explanatory
       // tooltip (e.g. "Перечитать базы" clarifying it never fetches new
       // signatures from the internet) — same tipRu/tipEn fields the
@@ -2531,6 +2601,18 @@ function projectLatLon(lat, lon, width, height){
 var lastMapPoints = [];
 var lastMapSummaryTitle = '';
 
+// A-63-3 (live full-stack finding, 2026-09-21): the LAST connections array
+// that actually produced visible map points. The network console's 5s poll
+// can legitimately come back with a HONEST empty payload (connector
+// `unreachable` — e.g. a slow osqueryi scan timing out) and re-rendering
+// the map from it used to wipe every dot off the map — the owner's «клик по
+// узлу — и всё исчезло с карты» turned out to be this background
+// re-render, not the click itself (the canvas has NO click handler at all,
+// only mousemove/mouseleave — see index.html). Keeping the last good
+// snapshot lets renderConnectionsMap keep the picture on screen (clearly
+// labelled as such) until a real payload arrives.
+var lastGoodMapConnections = [];
+
 // `connections` (the SAME enriched rows renderConsoleList already reads,
 // see security_console.py._enrich_connections) -> one entry per DISTINCT
 // `country` among rows that actually have a resolved (lat, lon) — never one
@@ -2713,12 +2795,36 @@ function drawConnectionsMap(canvas, connections, lang){
 // explanatory note is conditional, so the map never reads as a mysteriously
 // empty box with no explanation (the A-41 plan's own "не пустой холст без
 // объяснения" requirement).
-function renderConnectionsMap(connections, geoipStatus){
+function renderConnectionsMap(connections, geoipStatus, connectorStatus){
   var card = document.getElementById('conMapCard');
   var canvas = document.getElementById('conMapCanvas');
   var noteBox = document.getElementById('conMapNote');
   var lang = currentLang();
   card.hidden = false;
+
+  // A-63-3: remember the last payload that actually produced points, so a
+  // subsequent honest-but-empty `unreachable` response (see the
+  // lastGoodMapConnections docstring above) can still draw something real.
+  if(geoipStatus === 'ok' && connections.length){
+    lastGoodMapConnections = connections;
+  }
+
+  // A-63-3: an empty connections array is REAL data only when the connector
+  // itself is healthy (no resolvable countries / genuinely no sockets).
+  // When the connector is DOWN, the empty array means "we don't know" —
+  // redrawing the map from it used to blank the whole picture for one poll
+  // cycle (and the next poll usually restored it, producing the observed
+  // "everything vanished from the map" flicker). In that case keep drawing
+  // the last good snapshot and say so plainly in the note — the error
+  // banner above already carries the connector's honest status.
+  if(connectorStatus && connectorStatus !== 'ok' && !connections.length && lastGoodMapConnections.length){
+    noteBox.hidden = false;
+    noteBox.textContent = lang === 'ru'
+      ? 'Источник данных соединений временно недоступен — карта показывает последнюю успешную выборку.'
+      : 'The connections data source is temporarily unavailable — the map shows the last successful snapshot.';
+    drawConnectionsMap(canvas, lastGoodMapConnections, lang);
+    return;
+  }
 
   if(geoipStatus !== 'ok'){
     noteBox.hidden = false;
@@ -2774,6 +2880,37 @@ function handleConMapMouseLeave(){
 // shown as-is rather than silently swallowed or thrown on — same "never
 // crash on an unexpected-but-real value" rule as `formatValue` below.
 var NETWORK_PROTOCOL_LABELS = { '6': 'TCP', '17': 'UDP' };
+
+// A-63-7 (live full-stack finding, 2026-09-21): the owner saw the bare
+// «OS counters: не подключён» banner line and the generic "set connection
+// parameters in .env" tooltip — both misleading on two counts. First,
+// os_counters is NOT part of the «Стек защиты» bootstrap by DESIGN: it is
+// not a service/container, there is nothing to deploy — the connector reads
+// stock OS tools. Second, on Windows there is NO reliable non-admin
+// per-process network byte counter at all (see traffic_counters.py's own
+// docstring: every stock candidate was rejected with a reason; the real
+// mechanism would need an elevated ETW trace) — so on the owner's own
+// machine this source is honestly `not_configured` FOREVER, and no .env
+// keys exist to change that. This hint says all of that plainly (RU/EN,
+// Windows-aware via navigator) and backs both places the state shows: the
+// console's error banner line and the «Отправлено/Получено» column header.
+function osCountersHint(){
+  var lang = currentLang();
+  var isWindows = /win/i.test(navigator.platform || navigator.userAgent || '');
+  if(lang === 'ru'){
+    var baseRu = 'OS counters — это колонка «Отправлено/Получено»: сетевой трафик каждого процесса, посчитанный штатными средствами ОС. Это не сервис и не контейнер, поэтому его нет в «Стеке защиты» — разворачивать нечего.';
+    if(isWindows){
+      return baseRu + ' На Windows надёжного способа посчитать такой трафик без прав администратора нет, поэтому колонка честно показывает «—»; на macOS/Linux этот показатель работает из коробки.';
+    }
+    return baseRu + ' На этой ОС он работает из коробки; если вы видите этот баннер, штатный инструмент не найден или отказал.';
+  }
+  var baseEn = 'OS counters is the "Sent/Received" column: per-process network traffic counted with stock OS tools. It is not a service or a container, so it is absent from the Protection stack — there is nothing to deploy.';
+  if(isWindows){
+    return baseEn + ' Windows offers no reliable non-admin way to count this traffic, so the column honestly shows "—"; on macOS/Linux it works out of the box.';
+  }
+  return baseEn + ' On this OS it works out of the box; if you see this banner, the stock tool was not found or refused.';
+}
+
 function formatNetworkProtocol(protocol){
   if(protocol === null || protocol === undefined || protocol === '') return '—';
   return NETWORK_PROTOCOL_LABELS[protocol] || String(protocol);
@@ -3116,8 +3253,12 @@ function renderConsoleList(items){
     // every other honest-placeholder in this panel.
     var trafficStatus = lastConsoleData && lastConsoleData.connectors
       && lastConsoleData.connectors.os_counters && lastConsoleData.connectors.os_counters.status;
+    // A-63-7: not_configured gets the full honest explanation (what this
+    // is, why it is absent from the Protection stack, why Windows always
+    // shows a dash) instead of the generic dead-end "set .env parameters"
+    // text — see osCountersHint's own docstring.
     var trafficTip = trafficStatus && trafficStatus !== 'ok'
-      ? translateError('connector_' + trafficStatus)
+      ? (trafficStatus === 'not_configured' ? osCountersHint() : translateError('connector_' + trafficStatus))
       : null;
     var headerCols = lang === 'ru'
       ? [
@@ -3358,6 +3499,54 @@ var ACTION_HANDLERS = {
 // stale pair around would let a later language switch resurrect an old
 // message over the newer one.
 var conActionStatusLang = {};
+
+// A-63-5 (owner feedback, live 2026-09-21): «нет индикации процесса
+// обновления и ничего не понятно» — a busy-state helper for action
+// buttons. While a long elevated action runs (freshclam, cscli, netsh…),
+// the button shows a distinct pulsating busy label and is disabled
+// against double-clicks; the original label comes back when the promise
+// settles. Safe to call on a button that has since been re-rendered away
+// (the isConnected check makes the late restore a no-op).
+function setButtonBusy(btn, busy, busyText){
+  if(!btn || !btn.isConnected) return;
+  if(busy){
+    if(!btn.dataset.busyText) btn.dataset.busyText = btn.textContent;
+    btn.textContent = busyText || '…';
+    btn.disabled = true;
+    btn.classList.add('btn-busy');
+  } else {
+    btn.classList.remove('btn-busy');
+    if(btn.dataset.busyText){
+      btn.textContent = btn.dataset.busyText;
+      delete btn.dataset.busyText;
+    }
+    btn.disabled = false;
+  }
+}
+
+// Wraps a real action handler so the click shows the busy state for as
+// long as the handler's promise runs (async handlers return one; a
+// synchronous handler restores immediately). Handlers that manage their
+// own disabled state keep working — the restore runs after their promise
+// settles, so it always wins.
+function attachButtonBusyHandler(btn, handler, busyText){
+  btn.onclick = function(){
+    if(btn.disabled) return;
+    setButtonBusy(btn, true, busyText);
+    var restore = function(){ setButtonBusy(btn, false); };
+    try{
+      var outcome = handler(btn);
+      if(outcome && typeof outcome.then === 'function'){
+        outcome.then(restore, restore);
+      } else {
+        restore();
+      }
+    } catch(e){
+      restore();
+      throw e;
+    }
+  };
+}
 
 function setConActionStatus(text, kind, boxId){
   var box = document.getElementById(boxId || 'conActionStatus');

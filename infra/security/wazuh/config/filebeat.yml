@@ -1,0 +1,37 @@
+# A-63-6: manager-only filebeat config — replaces the stock
+# /etc/filebeat/filebeat.yml (mounted read-only by docker-compose.yml).
+#
+# The stock config inside wazuh/wazuh-manager ships
+# `output.elasticsearch: hosts: ['https://wazuh.indexer:9200']` — correct
+# for the full wazuh-docker stack, but this deployment is manager-only
+# (Decision #1, see ../docker-compose.yml): there IS no wazuh.indexer host,
+# so stock filebeat retries its DNS forever. Found live 2026-09-21 on the
+# owner's machine: hundreds of «wazuh.indexer DNS lookup failure» lines per
+# hour inside the manager container — the retry storm flagged as the
+# probable trigger of the API daemon's degradation/death (A-63-6 in
+# docs/план-спецификация-фаза-0-A63-живой-стек-2026-09-21.md).
+#
+# This config keeps filebeat itself alive (the image's own supervisor
+# expects the process to run) but points its output at a local file instead
+# of the network — the wazuh module keeps reading the manager's local
+# alerts.json (a plain local file, zero network), the alerts just land in a
+# local log nobody ships anywhere. ossec.conf's own
+# `<indexer><enabled>no</enabled>` (already in config/ossec.conf) disables
+# the ossec-level indexer integration; filebeat is a SEPARATE daemon with
+# its own config, which is exactly why the retry storm survived that switch.
+# NOTE: filebeat refuses to start with zero inputs ("no modules or inputs
+# enabled" — verified live via `filebeat test config`, and the message is
+# identical for the STOCK config, so it is not specific to this file) —
+# an explicit local filestream input on the manager's own alerts.json
+# guarantees there is always exactly one input, still zero network.
+filebeat.inputs:
+  - type: filestream
+    id: wazuh-alerts-local
+    enabled: true
+    paths:
+      - /var/ossec/logs/alerts/alerts.json
+output.file:
+  path: /var/log/filebeat
+  filename: filebeat-alerts
+  rotate_every_kb: 10240
+  number_of_files: 2
