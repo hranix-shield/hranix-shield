@@ -5913,6 +5913,7 @@ var STACK_STEP_LABELS = {
   secrets: { ru: 'Секреты стека', en: 'Stack secrets' },
   compose_files: { ru: 'Файлы развертывания', en: 'Deployment files' },
   network: { ru: 'Сеть Docker', en: 'Docker network' },
+  filebeat_config: { ru: 'Конфиг Filebeat', en: 'Filebeat config' },
   compose_up: { ru: 'Запуск контейнеров', en: 'Starting containers' },
   crowdsec_credentials: { ru: 'Креденшелы CrowdSec', en: 'CrowdSec credentials' },
   config_env: { ru: 'Настройки приложения', en: 'App settings' },

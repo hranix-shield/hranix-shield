@@ -151,11 +151,16 @@ async def test_bootstrap_happy_path_generates_files_and_writes_config(
     assert "655360" in compose
     assert "/monitored/data:ro" in compose
     assert "/monitored/logs:ro" in compose
-    # A-63-6: healthcheck менеджера (REST API 401 = жив) и filebeat-маунт,
-    # уводящий filebeat от несуществующего wazuh.indexer в локальный файл.
+    # A-63-6: healthcheck менеджера (REST API 401 = жив) и manager-only
+    # filebeat-конфиг, уводящий filebeat от несуществующего wazuh.indexer.
     assert "healthcheck:" in compose
     assert "grep -q 401" in compose
-    assert "/etc/filebeat/filebeat.yml:ro" in compose
+    # A-63-6b: filebeat-конфиг через named volume (Windows bind-маунт
+    # одиночного файла видится контейнером как 777 — filebeat не стартует),
+    # имя compose-проекта пиновано, чтобы имя volume было детерминированным.
+    assert "name: hranix-stack" in compose
+    assert "wazuh-filebeat-config:/etc/filebeat" in compose
+    assert "\n  wazuh-filebeat-config:\n" in compose
     assert (stack_dir / "wazuh" / "ossec.conf").is_file()
     assert (stack_dir / "wazuh" / "api.yaml").is_file()
     # A-63-6: сгенерированный filebeat.yml — manager-only (никаких сетевых
@@ -173,12 +178,19 @@ async def test_bootstrap_happy_path_generates_files_and_writes_config(
     assert config_env["CLAMAV_ENABLED"] == "True"
     assert config_env["CROWDSEC_API_KEY"] == "fresh-bouncer-key"
 
-    # Последовательность docker-вызовов: info, network create, compose up,
-    # bouncers add, machines add (--force — идемпотентность самого cscli).
+    # Последовательность docker-вызовов: info, network create, populate
+    # filebeat-volume, compose up, bouncers add, machines add (--force —
+    # идемпотентность самого cscli).
     joined_calls = [" ".join(args) for args in calls]
     assert any("docker info" in c for c in joined_calls)
     assert any("network create hranix-security-net" in c for c in joined_calls)
+    populate_index = next(
+        i for i, c in enumerate(joined_calls) if c.startswith("docker run")
+    )
     assert any("compose" in c and " up -d" in c for c in joined_calls)
+    assert populate_index < next(
+        i for i, c in enumerate(joined_calls) if " up -d" in c
+    )
     assert any("cscli bouncers add hranix-panel -o raw" in c for c in joined_calls)
     assert any(
         "cscli machines add hranix-panel --password" in c and " --force" in c
@@ -222,6 +234,10 @@ async def test_bootstrap_rerun_is_idempotent(
     assert not any("bouncers add" in c for c in joined_calls)
     assert any("machines add" in c and "--force" in c for c in joined_calls)
     assert _step(second, "crowdsec_credentials")["status"] == "ok"
+    # A-63-6b: populate volume повторяется каждый прогон — идемпотентно
+    # перезаписывает тот же файл тем же источником.
+    assert _step(second, "filebeat_config")["status"] == "ok"
+    assert any(c.startswith("docker run") for c in joined_calls)
 
 
 @pytest.mark.integration
@@ -406,6 +422,61 @@ async def test_bootstrap_reuses_user_wazuh_api_url_port(
         bootstrap_module.parse_env_file(config_env_file)["WAZUH_API_URL"]
         == "http://127.0.0.1:55999"
     )
+
+
+@pytest.mark.integration
+async def test_bootstrap_populates_filebeat_volume_with_mode_644(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A-63-6b: named volume наполняется ДО compose up одноразовым
+    alpine-контейнером; права 644 задаёт chmod populate-команды — filebeat
+    не стартует с конфигом, доступным на запись кому-либо кроме владельца
+    (ровно это и валило контейнер на Windows bind-маунте, где файл видится
+    777 и биты прав игнорируются). Команда пинуется целиком: volume по
+    детерминированному имени, источник — stack-каталог только на чтение,
+    cp + chmod 644. Живая проверка содержимого volume (ls -l → 644) —
+    отдельно, против реального docker, автотест docker не поднимает."""
+    calls: list[tuple[str, ...]] = []
+    _install_fake_docker(monkeypatch, calls=calls)
+
+    response = await _run_bootstrap(tmp_path)
+
+    assert _step(response, "filebeat_config")["status"] == "ok"
+    joined_calls = [" ".join(args) for args in calls]
+    populate = [c for c in joined_calls if c.startswith("docker run")]
+    assert len(populate) == 1
+    source_dir = (tmp_path / "data" / "stack" / "wazuh").as_posix()
+    assert populate[0] == (
+        f"docker run --rm -v {bootstrap_module.FILEBEAT_CONFIG_VOLUME}:/target"
+        f" -v {source_dir}:/src:ro alpine sh -c"
+        f" {bootstrap_module._FILEBEAT_VOLUME_COMMAND}"
+    )
+    assert bootstrap_module._FILEBEAT_VOLUME_COMMAND == (
+        "cp /src/filebeat.yml /target/filebeat.yml && chmod 644 /target/filebeat.yml"
+    )
+    # Имя volume — от пинованного compose-проекта, не от имени каталога.
+    assert bootstrap_module.FILEBEAT_CONFIG_VOLUME == (
+        "hranix-stack_wazuh-filebeat-config"
+    )
+
+
+@pytest.mark.integration
+async def test_bootstrap_filebeat_volume_failure_stops_before_compose_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Отказ populate-шага — честный error, compose up не запускается:
+    иначе менеджер стартовал бы с пустым /etc/filebeat (без конфига)."""
+    _install_fake_docker(
+        monkeypatch, responses={"docker run": (1, "", "docker: Error response")}
+    )
+
+    response = await _run_bootstrap(tmp_path)
+
+    assert response["status"] == "failed"
+    assert _step(response, "filebeat_config")["status"] == "error"
+    assert "docker: Error response" in (_step(response, "filebeat_config")["detail"] or "")
+    assert _step(response, "compose_up")["status"] == "skipped"
+    assert response["restart_required"] is False
 
 
 # ---------------------------------------------------------------------------

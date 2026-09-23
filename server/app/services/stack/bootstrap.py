@@ -60,13 +60,21 @@ CLAMAV_CONTAINER = "hranix-clamav"
 WAZUH_CONTAINER = "hranix-wazuh-manager"
 EXPECTED_CONTAINERS = (CROWDSEC_CONTAINER, CLAMAV_CONTAINER, WAZUH_CONTAINER)
 
-# Порядок и имена шагов фиксированы (ответ всегда перечисляет все семь —
+# A-63-6b: compose-проект пинован (`name:` в шапке генерируемого compose) —
+# иначе имя проекта (и volume-префикс) зависело бы от имени каталога
+# установки. Populate-шаг кладёт конфиг filebeat в volume по ПОЛНОМУ имени
+# до compose up, поэтому оно обязано быть детерминированным.
+COMPOSE_PROJECT_NAME = "hranix-stack"
+FILEBEAT_CONFIG_VOLUME = f"{COMPOSE_PROJECT_NAME}_wazuh-filebeat-config"
+
+# Порядок и имена шагов фиксированы (ответ всегда перечисляет все восемь —
 # недошедшие честно skipped).
 _STEP_SEQUENCE = (
     "docker",
     "secrets",
     "compose_files",
     "network",
+    "filebeat_config",
     "compose_up",
     "crowdsec_credentials",
     "config_env",
@@ -95,6 +103,9 @@ _DOCKER_INFO_TIMEOUT = 10.0
 _NETWORK_TIMEOUT = 10.0
 _COMPOSE_UP_TIMEOUT = 300.0
 _CSCLI_TIMEOUT = 60.0
+# A-63-6b: populate volume тянет образ alpine при первом прогоне — время
+# ближе к compose up, чем к сетевым операциям.
+_FILEBEAT_CONFIG_TIMEOUT = 120.0
 
 # Ключи config.env, которыми bootstrap владеет/проверяет (план-спецификация,
 # шаг 7; CLAMAV_ENABLED добавлен, потому что без него DoD «все три коннектора
@@ -257,7 +268,6 @@ def _render_compose(stack_dir: Path, data_dir: Path, log_dir: Path, wazuh_api_po
     парсера volume-строк."""
     wazuh_conf = (stack_dir / "wazuh" / "ossec.conf").as_posix()
     wazuh_api = (stack_dir / "wazuh" / "api.yaml").as_posix()
-    wazuh_filebeat = (stack_dir / "wazuh" / "filebeat.yml").as_posix()
     monitored_data = data_dir.as_posix()
     monitored_logs = log_dir.as_posix()
     return f"""\
@@ -275,6 +285,12 @@ def _render_compose(stack_dir: Path, data_dir: Path, log_dir: Path, wazuh_api_po
 #
 # Секреты Wazuh: сложность пароля проверяет сам образ при старте (слабый
 # отклоняется громкой ошибкой, не молча).
+
+# A-63-6b: имя compose-проекта пиновано — volume конфига filebeat должен
+# называться детерминированно {FILEBEAT_CONFIG_VOLUME}, его наполняет
+# bootstrap напрямую (docker run) до compose up, без оглядки на имя
+# каталога установки.
+name: {COMPOSE_PROJECT_NAME}
 
 services:
   crowdsec:
@@ -356,13 +372,19 @@ services:
       # при каждом старте контейнера — WAZUH_CONFIG_MOUNT-механизм).
       - {wazuh_conf}:/wazuh-config-mount/etc/ossec.conf:ro
       - {wazuh_api}:/wazuh-config-mount/api/configuration/api.yaml:ro
-      # A-63-6: manager-only — filebeat менеджера стоково шлёт алерты на
-      # https://wazuh.indexer:9200, которого в этом развёртывании нет
-      # (Decision #1), и без этого маунта вечно ретраит DNS (живой лог:
-      # сотни «wazuh.indexer DNS lookup failure» в час — вероятная причина
-      # деградации/смерти API-демона). Наш конфиг уводит output в
-      # локальный файл контейнера, сеть не трогает.
-      - {wazuh_filebeat}:/etc/filebeat/filebeat.yml:ro
+      # A-63-6/A-63-6b: manager-only — filebeat менеджера стоково шлёт
+      # алерты на https://wazuh.indexer:9200, которого в этом
+      # развёртывании нет (Decision #1); наш конфиг уводит output в
+      # локальный файл контейнера, сеть не трогает. Конфиг кладётся в
+      # named volume, который bootstrap наполняет до compose up:
+      # bind-маунт одиночного файла с Windows-хоста видится контейнером
+      # как -rwxrwxrwx, filebeat отказывается стартовать («config file
+      # can only be writable by the owner»), :ro не лечит — Windows-маунт
+      # игнорирует биты прав (живьём 2026-09-23, RestartCount=25).
+      # Ссылка — по ключу top-level volumes; полное имя (с префиксом
+      # пинованного проекта) compose резолвит сам, по нему же volume
+      # наполняет populate-шаг.
+      - wazuh-filebeat-config:/etc/filebeat
       # Единственные bind-маунты — два каталога самого приложения, только
       # чтение (решение #2 в infra/security/wazuh/docker-compose.yml).
       - {monitored_data}:/monitored/data:ro
@@ -378,6 +400,10 @@ volumes:
   crowdsec-data:
   clamav-db:
   wazuh-var:
+  # A-63-6b: конфиг filebeat — named volume вместо bind-маунта файла
+  # (обоснование — в комментарии wazuh-manager выше); наполняется
+  # bootstrap'ом до compose up.
+  wazuh-filebeat-config:
 """
 
 
@@ -767,6 +793,42 @@ async def _step_network(compose_file: Path, stack_env: Path) -> StepResult:
     return StepResult("network", "error", _truncate(stderr))
 
 
+# A-63-6b: файл кладётся в named volume одноразовым alpine-контейнером.
+# chmod 644 обязателен: filebeat не стартует с конфигом, доступным на
+# запись кому-либо кроме владельца («config file can only be writable by
+# the owner») — named volume, в отличие от Windows bind-маунта, биты прав
+# уважает. Идемпотентно: повторный прогон перезаписывает тот же файл.
+_FILEBEAT_VOLUME_COMMAND = (
+    "cp /src/filebeat.yml /target/filebeat.yml && chmod 644 /target/filebeat.yml"
+)
+
+
+async def _step_filebeat_config(stack_dir: Path) -> StepResult:
+    """Наполняет named volume конфига filebeat ДО compose up (A-63-6b):
+    сгенерированный stack/wazuh/filebeat.yml (его пишет шаг compose_files)
+    копируется внутрь {FILEBEAT_CONFIG_VOLUME} с правами 644. Пустой named
+    volume docker создаёт сам при первом docker run; без этого шага
+    wazuh-manager стартовал бы с пустым /etc/filebeat — без конфига."""
+    src = (stack_dir / "wazuh").as_posix()
+    try:
+        code, _stdout, stderr = await run_local_command(
+            "docker", "run", "--rm",
+            "-v", f"{FILEBEAT_CONFIG_VOLUME}:/target",
+            "-v", f"{src}:/src:ro",
+            "alpine", "sh", "-c", _FILEBEAT_VOLUME_COMMAND,
+            timeout=_FILEBEAT_CONFIG_TIMEOUT,
+        )
+    except LocalCommandNotFound:
+        return StepResult("filebeat_config", "missing", "docker_not_installed")
+    except LocalCommandTimedOut:
+        return StepResult(
+            "filebeat_config", "timeout", "filebeat volume populate timed out"
+        )
+    if code != 0:
+        return StepResult("filebeat_config", "error", _truncate(stderr))
+    return StepResult("filebeat_config", "ok", FILEBEAT_CONFIG_VOLUME)
+
+
 def _host_ports_busy(ports) -> list[int]:
     """Какие из 127.0.0.1-портов уже заняты (bind-проба без SO_REUSEADDR —
     занятый кем-то порт даёт OSError). Чисто локальная проверка до compose
@@ -1070,7 +1132,14 @@ async def run_stack_bootstrap(
     if network_step.status != "ok":
         return _finish("failed", False)
 
-    # Шаг 5: docker compose up -d (с port_busy-проверкой до него).
+    # Шаг 5: named volume конфига filebeat (A-63-6b) — строго ДО compose
+    # up, иначе wazuh-manager стартовал бы с пустым /etc/filebeat.
+    filebeat_step = await _step_filebeat_config(stack_dir)
+    steps.append(filebeat_step)
+    if filebeat_step.status != "ok":
+        return _finish("failed", False)
+
+    # Шаг 6: docker compose up -d (с port_busy-проверкой до него).
     compose_up_step = await _step_compose_up(
         compose_file, stack_env, data_dir, log_dir, wazuh_api_port
     )
@@ -1078,7 +1147,7 @@ async def run_stack_bootstrap(
     if compose_up_step.status != "ok":
         return _finish("failed", False)
 
-    # Шаг 6: креденшелы CrowdSec.
+    # Шаг 7: креденшелы CrowdSec.
     credentials_step = await _step_crowdsec_credentials(
         compose_file, stack_env, secrets_values, config_env
     )
@@ -1086,7 +1155,7 @@ async def run_stack_bootstrap(
     if credentials_step.status != "ok":
         return _finish("failed", False)
 
-    # Шаг 7: merge config.env. Ключ bouncer'а — ровно тот, что реально
+    # Шаг 8: merge config.env. Ключ bouncer'а — ровно тот, что реально
     # используется этим прогоном (переиспользованный из config.env либо
     # свежевыданный шагом credentials).
     config_step = _step_config_env(

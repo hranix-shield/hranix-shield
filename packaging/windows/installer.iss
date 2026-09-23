@@ -23,7 +23,7 @@
 ; in README.md, not hidden.
 
 #define MyAppName "Hranix Shield"
-#define MyAppVersion "0.1.2"
+#define MyAppVersion "0.1.3"
 #define MyAppPublisher "Hranix"
 #define MyAppExeName "Hranix Shield.exe"
 ; A-25: pinned to the SAME version as infra/security/wazuh/docker-

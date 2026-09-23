@@ -7,4 +7,4 @@ Bump manually per release; Phase 0 has no packaging/release pipeline yet
 to automate this.
 """
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
