@@ -451,6 +451,14 @@ function showPanel(){
   loadNotificationsPill();
   startNotificationsPolling();
   startHealthPolling();
+  // A-65-6: трей-пункт «Диагностика» ведёт на /panel/#system-components —
+  // сразу открываем вкладку компонентов и гасим хэш, чтобы повторный вход
+  // в панель не перебрасывал пользователя туда же молча.
+  if(location.hash === '#system-components'){
+    openHealthScreen();
+    switchHealthTab('components');
+    history.replaceState(null, '', location.pathname);
+  }
 }
 function showLogin(){
   document.getElementById('panelScreen').hidden = true;
@@ -470,6 +478,62 @@ function showLogin(){
   dismissHealthFailBanner();
   stopNotificationsPolling();
   stopHealthPolling();
+  loadLoginHealthStrip();
+}
+
+/* ---------- полоса компонентов на форме входа (A-65-5, уровень 1) ----------
+   Публичный GET /health/system (кэш 30с на сервере) — только статусы и
+   коды; показывает honest-картину ДО входа: «панель открылась, но
+   Docker/стек лежат» видно сразу, без логина. Лейблы — те же
+   SYSTEM_COMPONENT_LABELS/SYSTEM_STATUS_LABELS, что у вкладки компонентов. */
+async function loadLoginHealthStrip(){
+  var strip = document.getElementById('loginHealthStrip');
+  if(!strip) return;
+  try{
+    var res = await fetch('/health/system');
+    if(!res.ok){ strip.hidden = true; return; }
+    renderLoginHealthStrip(await res.json());
+  } catch(e){ strip.hidden = true; }
+}
+
+function renderLoginHealthStrip(body){
+  var strip = document.getElementById('loginHealthStrip');
+  var agg = document.getElementById('loginHealthAgg');
+  var bad = document.getElementById('loginHealthBad');
+  var dots = document.getElementById('loginHealthDots');
+  if(!strip || !agg || !dots) return;
+  var components = (body && body.components) || [];
+  var aggregate = (body && body.aggregate) || 'ok';
+
+  var aggTexts = {
+    ok: { ru: 'Все компоненты работают', en: 'All components are running' },
+    degraded: { ru: 'Часть компонентов требует внимания', en: 'Some components need attention' },
+    down: { ru: 'Обнаружена авария компонентов', en: 'A component failure was detected' },
+  };
+  agg.textContent = aggTexts[aggregate][currentLang()];
+  agg.className = 'login-health-agg ' + aggregate;
+
+  var unhealthy = components.filter(function(c){ return c.status !== 'ok'; });
+  if(unhealthy.length){
+    bad.hidden = false;
+    bad.textContent = unhealthy.slice(0, 4).map(function(c){
+      var text = systemComponentLabel(c.id) + ' — ' + systemStatusLabel(c.status).toLowerCase();
+      var detail = systemDetailLabel(c.detail);
+      return detail && detail !== c.detail ? text + ' (' + detail.toLowerCase() + ')' : text;
+    }).join(currentLang() === 'ru' ? '; ' : '; ')
+    + (unhealthy.length > 4 ? (currentLang() === 'ru' ? '; …' : '; …') : '');
+  } else {
+    bad.hidden = true;
+  }
+
+  dots.innerHTML = '';
+  components.forEach(function(c){
+    var dot = document.createElement('span');
+    dot.className = 'login-health-dot ' + c.status;
+    dot.title = systemComponentLabel(c.id) + ': ' + systemStatusLabel(c.status);
+    dots.appendChild(dot);
+  });
+  strip.hidden = false;
 }
 function show(viewId){
   document.querySelectorAll('.view').forEach(function(v){
@@ -558,6 +622,11 @@ async function loadHealthPill(){
     renderHealthPill();
     if(document.getElementById('view-health') && document.getElementById('view-health').classList.contains('active')){
       renderHealthComponents();
+      // A-65-4: вкладка компонентов открыта — перечитываем и её (серверный
+      // кэш 30с делает это дешёвым).
+      if(document.getElementById('healthTab-components') && document.getElementById('healthTab-components').classList.contains('active')){
+        loadSystemHealth();
+      }
     }
     maybeProposeDiagnosticReport(previousStatus, body.status);
   } catch(e){ /* network hiccup — pill just keeps its last known state */ }
@@ -590,12 +659,13 @@ function closeHealthScreen(){
 }
 
 function switchHealthTab(tab){
-  ['health', 'logs'].forEach(function(id){
+  ['health', 'components', 'logs'].forEach(function(id){
     var btn = document.getElementById('healthTabBtn-' + id);
     var panel = document.getElementById('healthTab-' + id);
     if(btn) btn.classList.toggle('active', id === tab);
     if(panel) panel.classList.toggle('active', id === tab);
   });
+  if(tab === 'components') loadSystemHealth();
   if(tab === 'logs') loadHealthLogs();
 }
 
@@ -652,6 +722,220 @@ function renderHealthComponents(){
 
     box.appendChild(row);
   });
+}
+
+/* ---------- вкладка «Компоненты системы» (A-65-4, уровень 2 реанимации) ----------
+   Полная матрица GET /health/system (публичный, кэш 30с на сервере): статус,
+   код причины и код remediation-действия у каждого нездорового компонента.
+   Тексты — локализация по машинным кодам (API-контракт §0.2: бэкенд отдаёт
+   только коды). Кнопки действий — POST /health/system/actions/{id} (admin);
+   не-админ получает честный 403 с локализованным сообщением. */
+var lastSystemHealth = null;
+
+var SYSTEM_COMPONENT_LABELS = {
+  server: { ru: 'Панель (сервер)', en: 'Panel (server)' },
+  database: { ru: 'База данных', en: 'Database' },
+  event_bus: { ru: 'Событийная шина', en: 'Event bus' },
+  docker_engine: { ru: 'Docker (движок)', en: 'Docker (engine)' },
+  'hranix-crowdsec': { ru: 'Контейнер CrowdSec', en: 'CrowdSec container' },
+  'hranix-clamav': { ru: 'Контейнер ClamAV', en: 'ClamAV container' },
+  'hranix-wazuh-manager': { ru: 'Контейнер Wazuh', en: 'Wazuh container' },
+  wazuh_api: { ru: 'Wazuh API', en: 'Wazuh API' },
+  crowdsec_lapi: { ru: 'CrowdSec LAPI', en: 'CrowdSec LAPI' },
+  clamd: { ru: 'Антивирус (clamd)', en: 'Antivirus (clamd)' },
+  restic: { ru: 'restic (бэкапы)', en: 'restic (backups)' },
+  osqueryi: { ru: 'osqueryi (сбор данных)', en: 'osqueryi (data collection)' },
+  disk: { ru: 'Диск (свободное место)', en: 'Disk (free space)' },
+};
+
+var SYSTEM_STATUS_LABELS = {
+  ok: { ru: 'OK', en: 'OK' },
+  not_configured: { ru: 'Не настроен', en: 'Not configured' },
+  degraded: { ru: 'Внимание', en: 'Attention' },
+  unreachable: { ru: 'Недоступен', en: 'Unreachable' },
+};
+
+var SYSTEM_ACTION_LABELS = {
+  start_docker_desktop: { ru: '▶ Запустить Docker Desktop', en: '▶ Start Docker Desktop' },
+  compose_up_stack: { ru: '⬆ Развернуть стек', en: '⬆ Deploy stack' },
+  restart_container: { ru: '⟳ Перезапустить', en: '⟳ Restart' },
+};
+
+// Коды причин /health/system -> текст (неизвестный код показывается как есть —
+// честно, без выдуманного «успеха» локализации).
+var SYSTEM_DETAIL_LABELS = {
+  docker_not_installed: { ru: 'Docker не установлен', en: 'Docker is not installed' },
+  docker_daemon_unreachable: { ru: 'Движок Docker не отвечает', en: 'Docker engine is not responding' },
+  docker_info_timed_out: { ru: 'Docker не ответил вовремя', en: 'Docker did not answer in time' },
+  docker_engine_unreachable: { ru: 'Движок Docker недоступен', en: 'Docker engine is unavailable' },
+  container_absent: { ru: 'Контейнер не создан', en: 'Container is not created' },
+  container_unhealthy: { ru: 'Контейнер не прошёл проверку', en: 'Container failed its healthcheck' },
+  healthcheck_starting: { ru: 'Контейнер поднимается', en: 'Container is starting up' },
+  not_configured: { ru: 'Не настроено', en: 'Not configured' },
+  connection_refused: { ru: 'Соединение отклонено', en: 'Connection refused' },
+  timeout: { ru: 'Не ответил вовремя', en: 'Timed out' },
+  probe_failed: { ru: 'Ошибка проверки', en: 'Probe failed' },
+  bad_url: { ru: 'Адрес настроен неверно', en: 'Configured address is invalid' },
+  clamd_unreachable: { ru: 'Не отвечает', en: 'Not responding' },
+  database_unavailable: { ru: 'Недоступна', en: 'Unavailable' },
+  disk_low_free_space: { ru: 'Меньше 5 ГБ свободно', en: 'Less than 5 GB free' },
+  disk_probe_failed: { ru: 'Не удалось измерить', en: 'Could not measure' },
+};
+
+function systemComponentLabel(id){
+  var known = SYSTEM_COMPONENT_LABELS[id];
+  if(known) return known[currentLang()];
+  return id.replace(/_/g, ' ').replace(/\b\w/g, function(c){ return c.toUpperCase(); });
+}
+function systemStatusLabel(status){
+  return (SYSTEM_STATUS_LABELS[status] || { ru: status, en: status })[currentLang()];
+}
+function systemDetailLabel(detail){
+  if(!detail) return '';
+  if(detail.indexOf('container_') === 0 && !SYSTEM_DETAIL_LABELS[detail]){
+    // container_exited/created/paused/... — общая формулировка с состоянием.
+    return currentLang() === 'ru' ? 'Контейнер остановлен (' + detail.slice('container_'.length) + ')'
+                                  : 'Container stopped (' + detail.slice('container_'.length) + ')';
+  }
+  if(detail.indexOf('_not_found') > 0) return currentLang() === 'ru' ? 'Не найден' : 'Not found';
+  if(detail.indexOf('_version_timed_out') > 0) return systemDetailLabel('timeout');
+  if(detail.indexOf('_version_failed') > 0) return currentLang() === 'ru' ? 'Не запускается' : 'Does not run';
+  return (SYSTEM_DETAIL_LABELS[detail] || { ru: detail, en: detail })[currentLang()];
+}
+
+async function loadSystemHealth(){
+  try{
+    var res = await apiFetch('/health/system');
+    if(!res.ok) return;
+    lastSystemHealth = await res.json();
+    renderSystemMatrix();
+  } catch(e){ /* network hiccup — экран остаётся в последнем известном состоянии */ }
+}
+
+function renderSystemMatrix(){
+  var box = document.getElementById('systemComponentsList');
+  if(!box || !lastSystemHealth) return;
+  var components = lastSystemHealth.components || [];
+  box.innerHTML = '';
+  if(components.length === 0){
+    box.innerHTML = '<div class="con-empty" data-ru="Компоненты не получены" data-en="No components received">Компоненты не получены</div>';
+    return;
+  }
+  components.forEach(function(component){
+    var row = document.createElement('div');
+    row.className = 'con-row';
+
+    var name = document.createElement('span');
+    name.className = 'cr-k';
+    name.textContent = systemComponentLabel(component.id);
+    row.appendChild(name);
+
+    var detailText = systemDetailLabel(component.detail);
+    if(detailText){
+      var detail = document.createElement('span');
+      detail.style.color = 'var(--ink2)';
+      detail.textContent = detailText;
+      row.appendChild(detail);
+    }
+
+    if(component.action){
+      var btn = document.createElement('button');
+      btn.className = 'btn-ghost';
+      btn.style.fontSize = '11px';
+      btn.style.padding = '4px 10px';
+      btn.textContent = (SYSTEM_ACTION_LABELS[component.action] || { ru: component.action, en: component.action })[currentLang()];
+      btn.onclick = function(){ handleSystemAction(component.action, component.id, btn); };
+      row.appendChild(btn);
+    }
+
+    var state = document.createElement('span');
+    state.className = 'sec-state ' + (component.status === 'not_configured' ? 'not-configured' : component.status);
+    state.style.marginLeft = 'auto';
+    state.textContent = systemStatusLabel(component.status);
+    row.appendChild(state);
+
+    box.appendChild(row);
+  });
+}
+
+function setSystemComponentsStatus(text, kind){
+  var box = document.getElementById('systemComponentsStatus');
+  if(!box) return;
+  box.hidden = !text;
+  box.className = 'con-status' + (kind ? ' ' + kind : '');
+  box.textContent = text;
+}
+
+async function handleSystemPing(){
+  var btn = document.getElementById('systemPingBtn');
+  if(btn) btn.disabled = true;
+  setSystemComponentsStatus('', null);
+  try{
+    var res = await apiFetch('/health/system/actions/ping_components', { method: 'POST' });
+    if(res.status === 403){
+      // Не-админ: честная роль-отказ + обычное перечитывание публичной
+      // матрицы (вернёт кэш не старше 30с).
+      await loadSystemHealth();
+      setSystemComponentsStatus(translateError('insufficient_role'), 'warn');
+      return;
+    }
+    if(!res.ok){
+      setSystemComponentsStatus(translateError('unknown_error'), 'warn');
+      return;
+    }
+    lastSystemHealth = await res.json();
+    renderSystemMatrix();
+    setSystemComponentsStatus(currentLang() === 'ru' ? 'Проверено.' : 'Checked.', 'ok');
+  } catch(e){
+    setSystemComponentsStatus(translateError('network_error'), 'warn');
+  } finally {
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function handleSystemAction(action, componentId, btn){
+  var longOps = { compose_up_stack: true, restart_container: true };
+  if(longOps[action]){
+    var confirmed = window.confirm(
+      currentLang() === 'ru'
+        ? 'Выполнить «' + (SYSTEM_ACTION_LABELS[action] || { ru: action })[currentLang()] + '» для «' + systemComponentLabel(componentId) + '»?'
+        : 'Run "' + (SYSTEM_ACTION_LABELS[action] || { en: action })[currentLang()] + '" on "' + systemComponentLabel(componentId) + '"?'
+    );
+    if(!confirmed) return;
+  }
+  if(btn) btn.disabled = true;
+  setSystemComponentsStatus(currentLang() === 'ru' ? 'Выполняется…' : 'Running…', null);
+  try{
+    var res = await apiFetch('/health/system/actions/' + action, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: action === 'restart_container' ? JSON.stringify({ name: componentId }) : '{}',
+    });
+    var body = await res.json().catch(function(){ return {}; });
+    if(res.status === 403){
+      setSystemComponentsStatus(translateError('insufficient_role'), 'warn');
+      return;
+    }
+    if(!res.ok){
+      var code = (body.detail && body.detail.error) || 'unknown_error';
+      setSystemComponentsStatus(translateError(code), 'warn');
+      return;
+    }
+    if(action === 'compose_up_stack' && body.status === 'ok'){
+      setSystemComponentsStatus(currentLang() === 'ru'
+        ? 'Стек поднят. Коннекторы прочитают настройки после перезапуска приложения.'
+        : 'The stack is up. Connectors pick up the settings after an app restart.', 'ok');
+    } else if(body.status === 'ok'){
+      setSystemComponentsStatus(currentLang() === 'ru' ? 'Готово.' : 'Done.', 'ok');
+    } else {
+      setSystemComponentsStatus(systemDetailLabel(body.detail) || (currentLang() === 'ru' ? 'Не удалось.' : 'Failed.'), 'warn');
+    }
+    await loadSystemHealth();
+  } catch(e){
+    setSystemComponentsStatus(translateError('network_error'), 'warn');
+  } finally {
+    if(btn) btn.disabled = false;
+  }
 }
 
 /* ---------- вкладка «Логи» (GET /diagnostics/logs — уже обезличенные строки A-5) ---------- */

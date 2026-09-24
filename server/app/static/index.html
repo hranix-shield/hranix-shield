@@ -24,6 +24,14 @@
   <div class="login-card">
     <div class="login-brand">🛡️ <span>Hranix Shield</span></div>
     <p class="login-lede" data-ru="Локальная панель безопасности" data-en="Local security panel">Локальная панель безопасности</p>
+    <!-- A-65-5: уровень 1 реанимации — полоса статуса компонентов ДО входа
+         (публичный GET /health/system: только статусы и коды, ни секретов;
+         кнопки действий появляются только после входа — уровень 2). -->
+    <div class="login-health" id="loginHealthStrip" hidden>
+      <span class="login-health-agg" id="loginHealthAgg"></span>
+      <div class="login-health-bad" id="loginHealthBad" hidden></div>
+      <div class="login-health-dots" id="loginHealthDots"></div>
+    </div>
     <form id="loginForm" onsubmit="return handleLogin(event)">
       <label>
         <span data-ru="Логин" data-en="Username">Логин</span>
@@ -361,6 +369,12 @@
       <div class="tabs" id="healthTabs">
         <button class="tab-btn active" id="healthTabBtn-health" onclick="switchHealthTab('health')"
           data-ru="Здоровье" data-en="Health">Здоровье</button>
+        <!-- A-65-4: уровень 2 реанимации — полная матрица компонентов машины
+             (Docker-движок, контейнеры стека, сервисы, restic/osqueryi, диск)
+             с кнопками действий у каждого нездорового (admin). Сюда ведёт и
+             пункт «Диагностика» трея (A-65-6) — через #system-components. -->
+        <button class="tab-btn" id="healthTabBtn-components" onclick="switchHealthTab('components')"
+          data-ru="Компоненты системы" data-en="System components">Компоненты системы</button>
         <button class="tab-btn" id="healthTabBtn-logs" onclick="switchHealthTab('logs')"
           data-ru="Логи" data-en="Logs">Логи</button>
       </div>
@@ -399,6 +413,25 @@
               data-ru="Сформировать и скачать" data-en="Generate & download">Сформировать и скачать</button>
             <button class="btn-ghost" onclick="closeReportConsent()" data-ru="Отмена" data-en="Cancel">Отмена</button>
           </div>
+        </div>
+      </div>
+
+      <!-- ВКЛАДКА: КОМПОНЕНТЫ СИСТЕМЫ (A-65-4) — матрица /health/system:
+           статус/деталь/кнопка действия у каждого нездорового компонента +
+           «Проверить снова» (admin ping_components; не-админ получает
+           честный отказ роли). -->
+      <div class="tab-panel" id="healthTab-components">
+        <div class="con-actions">
+          <button class="btn-ghost" id="systemPingBtn" onclick="handleSystemPing()"
+            data-ru="⟳ Проверить снова" data-en="⟳ Check again">⟳ Проверить снова</button>
+        </div>
+        <div class="con-status" id="systemComponentsStatus" hidden></div>
+        <div class="con-list" id="systemComponentsList">
+          <div class="con-empty" data-ru="Загрузка…" data-en="Loading…">Загрузка…</div>
+        </div>
+        <div class="con-hint" data-ru="Кнопки у компонентов выполняют реальное восстановление: перезапуск контейнера, поднятие стека защиты или запуск Docker Desktop. Действия доступны администратору."
+          data-en="Component buttons perform real recovery: container restart, security stack deployment, or starting Docker Desktop. Actions are available to the administrator.">
+          Кнопки у компонентов выполняют реальное восстановление: перезапуск контейнера, поднятие стека защиты или запуск Docker Desktop. Действия доступны администратору.
         </div>
       </div>
 

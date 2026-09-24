@@ -83,6 +83,82 @@ def _isolate_restic_password_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     )
 
 
+@pytest.fixture(autouse=True)
+def _fake_system_health_environment(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """A-65-1: детерминированная «здоровая машина» для коллектора системной
+    матрицы (services/health/system.py), по духу — тот же blanket-safety-net,
+    что `_isolate_restic_password_file` выше. Без неё любой тест, задевающий
+    GET /health/system (а с A-65-2 и GET /health/detailed), запускал бы
+    РЕАЛЬНЫЕ subprocess-опросы (docker info/inspect, restic --version,
+    osqueryi --version) и реальные сетевые зонды — медленно, зависимо от
+    машины и негердично для существующих assert'ов «status == ok»
+    (docker-движок может быть не поднят, restic/osqueryi не установлены —
+    и это честные not_configured/unreachable, ломающие агрегат).
+
+    Фейк — ЗДОРОВАЯ машина: docker-движок отвечает, три контейнера стека
+    running (wazuh healthy), креденшелы config.env записаны, HTTP-зонды и
+    clamd отвечают, restic/osqueryi исполняются, на диске свободно много.
+    Тесты самой матрицы переопределяют нужные имена поверх этого фейка
+    (monkeypatch теста срабатывает позже и выигрывает). Кэш матрицы
+    сбрасывается до и после каждого теста — модульный кэш не протекает
+    между тестами ни в одну сторону.
+    """
+    import app.services.health.system as health_system_module
+
+    # ВНЕ tmp_path теста (отдельный каталог фабрики tmp): корень tmp_path и
+    # его поддерево принадлежат самому тесту — есть тесты, рекурсивно
+    # перечисляющие его содержимое (_iter_scan_candidates в
+    # test_clamav_scan; найдено падением полного прогона A-65), любой файл
+    # фикстуры внутри ломал бы их.
+    config_env_dir = tmp_path_factory.mktemp("fake-system-health")
+    config_env_file = config_env_dir / "config.env"
+    config_env_file.write_text(
+        "CROWDSEC_LAPI_URL=http://127.0.0.1:8089\n"
+        "CROWDSEC_API_KEY=fake-bouncer-key\n"
+        "WAZUH_API_URL=http://127.0.0.1:55000\n"
+        "WAZUH_API_PASSWORD=fake-wazuh-pass\n"
+        "CLAMAV_ENABLED=True\n"
+        "CLAMAV_HOST=127.0.0.1\n"
+        "CLAMAV_PORT=3310\n",
+        encoding="utf-8",
+    )
+
+    fake_inspect_output = (
+        "/hranix-crowdsec|running|none\n"
+        "/hranix-clamav|running|none\n"
+        "/hranix-wazuh-manager|running|healthy\n"
+    )
+
+    async def fake_run(*args: str, timeout: float = 5.0):
+        joined = " ".join(args)
+        if "info" in joined:
+            return (0, "29.0.0\n", "")
+        if "inspect" in joined:
+            return (0, fake_inspect_output, "")
+        if "--version" in args:
+            return (0, "fake 1.0\n", "")
+        return (0, "", "")
+
+    async def fake_probe_http(url: str, *, timeout: float = 3.0):
+        return 401
+
+    async def fake_probe_clamd(host: str, port: int):
+        return None
+
+    monkeypatch.setattr(health_system_module, "run_local_command", fake_run)
+    monkeypatch.setattr(health_system_module, "_probe_http", fake_probe_http)
+    monkeypatch.setattr(health_system_module, "_probe_clamd", fake_probe_clamd)
+    monkeypatch.setattr(health_system_module, "_disk_free_bytes", lambda path: 100 * 1024**3)
+    monkeypatch.setattr(
+        health_system_module, "_resolve_config_env_file", lambda: config_env_file
+    )
+    health_system_module.invalidate_system_health_cache()
+    yield
+    health_system_module.invalidate_system_health_cache()
+
+
 def _alembic_config_for(db_path: Path) -> Config:
     alembic_cfg = Config(str(ALEMBIC_INI))
     alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db_path}")

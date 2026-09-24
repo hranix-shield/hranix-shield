@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,20 @@ from app.services.mcp.security_connectors.clamav import (
 from tests.common.fake_clamd import FakeClamd, free_but_closed_port
 
 _EICAR = rb"X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+
+# A-65-0 (из промпта A-64): EICAR-тесты пишут настоящий EICAR-тестфайл,
+# который реальный Windows Defender удаляет до скана — артефакт среды, не
+# кода (см. CONTRIBUTING.md §1). Семантика тестов не меняется.
+_EICAR_WIN_SKIP = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows Defender перехватывает EICAR-тестфайл до скана (артефакт среды)",
+)
+# Тесты, сравнивающие монотонность finished_at у заданий, созданных подряд:
+# разрешение системных часов Windows (~15 мс) даёт им одинаковые метки.
+_CLOCK_WIN_SKIP = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="разрешение часов Windows (~15 мс) делает finished_at одинаковым у заданий, созданных подряд",
+)
 
 
 def _eicar_aware_responder(data: bytes) -> bytes:
@@ -107,6 +122,7 @@ async def test_run_quick_scan_raises_clamd_error_when_unreachable(tmp_path):
         await run_quick_scan(client=client, target_dirs=[tmp_path])
 
 
+@_EICAR_WIN_SKIP
 @pytest.mark.unit
 async def test_run_quick_scan_detects_an_eicar_file_among_clean_ones(tmp_path):
     (tmp_path / "clean1.txt").write_bytes(b"hello world")
@@ -152,6 +168,7 @@ async def _wait_until_finished(registry: ClamAvScanJobRegistry, job_id: str, *, 
     return await asyncio.wait_for(_poll(), timeout=timeout)
 
 
+@_EICAR_WIN_SKIP
 @pytest.mark.unit
 async def test_start_full_scan_completes_in_the_background_and_detects_eicar(tmp_path):
     (tmp_path / "clean.txt").write_bytes(b"clean")
@@ -487,6 +504,7 @@ async def test_run_custom_scan_raises_clamd_error_when_unreachable(tmp_path):
         await run_custom_scan(allowed_root, allowed_roots=[allowed_root], client=client)
 
 
+@_EICAR_WIN_SKIP
 @pytest.mark.unit
 async def test_run_custom_scan_detects_an_eicar_file_in_an_allowed_nested_subdirectory(tmp_path):
     allowed_root = tmp_path / "allowed"
@@ -506,6 +524,7 @@ async def test_run_custom_scan_detects_an_eicar_file_in_an_allowed_nested_subdir
         assert result["path"] == str(allowed_root.resolve())
 
 
+@_EICAR_WIN_SKIP
 @pytest.mark.unit
 async def test_run_custom_scan_can_target_a_single_file_directly(tmp_path):
     allowed_root = tmp_path / "allowed"
@@ -523,6 +542,13 @@ async def test_run_custom_scan_can_target_a_single_file_directly(tmp_path):
         assert result["path"] == str(eicar_path.resolve())
 
 
+# A-65-0: тест моделирует POSIX-механику expanduser (подмена $HOME); на
+# Windows os.path.expanduser читает USERPROFILE, поэтому подмена $HOME
+# не действует — ограничение среды, не бага кода.
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="expanduser на Windows читает USERPROFILE, а не подменяемый $HOME (POSIX-механика)",
+)
 @pytest.mark.unit
 async def test_run_custom_scan_expands_a_leading_tilde_to_the_real_home_directory(tmp_path, monkeypatch):
     """The panel's own input placeholder (app.js's `avCustomScanPath`)
@@ -1001,6 +1027,7 @@ def test_scan_job_registry_most_recent_completed_ignores_running_and_failed_jobs
     assert registry.most_recent_completed() is None
 
 
+@_CLOCK_WIN_SKIP
 @pytest.mark.unit
 def test_scan_job_registry_most_recent_completed_picks_the_latest_by_finished_at():
     registry = ClamAvScanJobRegistry()
@@ -1014,6 +1041,7 @@ def test_scan_job_registry_most_recent_completed_picks_the_latest_by_finished_at
     assert registry.most_recent_completed().id == newer.id
 
 
+@_CLOCK_WIN_SKIP
 @pytest.mark.unit
 def test_scan_job_registry_most_recent_completed_kind_filter_ignores_other_kinds():
     """Post-merge user request (2026-08-02): `kind="full"` must find the

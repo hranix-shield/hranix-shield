@@ -105,6 +105,7 @@ expected: this file only ever runs on Windows, packaged or not.
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import sys
 import tempfile
@@ -133,8 +134,101 @@ from launcher import LauncherHandle, launch  # noqa: E402 (see sys.path adjustme
 logger = logging.getLogger(__name__)
 
 _OPEN_PANEL = "Открыть панель"
+_DIAGNOSTICS = "Диагностика"
 _QUIT = "Выход"
 _ICON_FILENAME = "hranix-shield-tray.ico"
+
+# IDYES из Win32 MessageBoxW; MB_-константы — документированные значения
+# user32, ctypes-обёрток для них в стандартной библиотеке нет.
+_MB_YESNO = 0x4
+_MB_ICONQUESTION = 0x20
+_MB_ICONINFORMATION = 0x40
+_MB_ICONWARNING = 0x30
+_MB_TOPMOST = 0x40000
+_MB_SETFOREGROUND = 0x10000
+_IDYES = 6
+
+
+def _ask_yes_no(text: str) -> bool:
+    """Уведомление-вопрос сторожа («Запустить Docker Desktop?»). Вызывается
+    из потока-сторожа — message-loop трея (другой поток) не блокирует."""
+    flags = _MB_YESNO | _MB_ICONQUESTION | _MB_TOPMOST | _MB_SETFOREGROUND
+    return ctypes.windll.user32.MessageBoxW(0, text, "Hranix Shield", flags) == _IDYES
+
+
+def _notify(text: str, *, warning: bool = False) -> None:
+    icon = _MB_ICONWARNING if warning else _MB_ICONINFORMATION
+    flags = icon | _MB_TOPMOST | _MB_SETFOREGROUND
+    ctypes.windll.user32.MessageBoxW(0, text, "Hranix Shield", flags)
+
+
+def _run_watchdog(state: "_TrayState") -> None:
+    """Уровень 0 реанимации (план-спецификация A-65): стартовая проверка
+    машины и самопомощь — движок Docker лежит, но Desktop установлен →
+    вопрос «Запустить?»; контейнеры Down → идемпотентный compose up;
+    сервер не поднялся → уведомление с путём журнала. Вся логика решений —
+    в app.services.health.watchdog (покрыта автотестами); здесь только
+    исполнение: потоки, окна-вопросы, запуск Remediation-функций. Любая
+    ошибка сторожа — залогирована и проглочена: сторож не может быть
+    причиной неработающего трея."""
+    import asyncio
+
+    try:
+        from app.services.health import remediation, watchdog
+
+        assessment = asyncio.run(watchdog.gather_startup_assessment())
+
+        if assessment["suggest_start_docker_desktop"]:
+            if _ask_yes_no(
+                "Docker запущен, но движок не отвечает.\n"
+                "Запустить Docker Desktop?"
+            ):
+                result = asyncio.run(remediation.start_docker_desktop())
+                if result["status"] == "ok":
+                    _notify("Docker Desktop запускается — это занимает до минуты…")
+                    if asyncio.run(watchdog.wait_for_engine()):
+                        _notify("Docker-движок поднялся.")
+                    else:
+                        _notify(
+                            "Docker-движок так и не ответил — откройте "
+                            "«Диагностику» в меню трея для деталей.",
+                            warning=True,
+                        )
+                else:
+                    _notify(
+                        "Не удалось запустить Docker Desktop ("
+                        + str(result["detail"]) + ").",
+                        warning=True,
+                    )
+
+        if assessment["suggest_compose_up"]:
+            stopped = ", ".join(assessment["containers_absent_or_stopped"])
+            _notify(
+                "Контейнеры защиты не запущены (" + stopped + ").\n"
+                "Поднимаю стек — это может занять несколько минут…"
+            )
+            bootstrap = asyncio.run(remediation.compose_up_stack())
+            if bootstrap["status"] == "ok":
+                _notify(
+                    "Стек защиты поднят. Коннекторы прочитают настройки "
+                    "после перезапуска приложения."
+                )
+            else:
+                logger.info("tray watchdog: compose up result: %s", bootstrap["status"])
+                _notify(
+                    "Не удалось поднять стек защиты автоматически — "
+                    "откройте панель: «Здоровье → Компоненты системы».",
+                    warning=True,
+                )
+
+        if state.handle is not None and not state.handle.healthy:
+            _notify(
+                "Сервер панели не ответил вовремя — интерфейс может не "
+                "открыться.\nЖурнал: " + watchdog.resolve_assistant_log_path(),
+                warning=True,
+            )
+    except Exception:
+        logger.exception("tray: watchdog crashed — ignoring, tray stays alive")
 
 
 def _generate_icon_file() -> Path:
@@ -237,13 +331,22 @@ class _TrayState:
         # `hranix_shield_app.py`'s rumps callbacks receiving `_sender`.
         if self.handle is None:
             # Cannot actually happen in practice: `main()` sets
-            # `self.handle` synchronously before `systray.start()` (and
+            # `self.handle` synchronously before `.start()` (and
             # therefore before this callback could ever fire) — kept as a
             # defensive check anyway, same reasoning the macOS wrapper
             # documents for its own equivalent `None` guard.
             logger.warning("tray: '%s' clicked before launch() finished", _OPEN_PANEL)
             return
         webbrowser.open(f"{self.handle.base_url}/panel/")
+
+    def open_diagnostics(self, _systray: SysTrayIcon) -> None:
+        # A-65-6: «Диагностика» — та же панель, сразу на вкладке
+        # «Компоненты системы» (deep-link #system-components обрабатывает
+        # showPanel() в app.js).
+        if self.handle is None:
+            logger.warning("tray: '%s' clicked before launch() finished", _DIAGNOSTICS)
+            return
+        webbrowser.open(f"{self.handle.base_url}/panel/#system-components")
 
     def quit(self, _systray: SysTrayIcon) -> None:
         # Invoked by infi.systray's `on_quit` hook (traybar.py's
@@ -265,6 +368,8 @@ def main() -> None:
 
     menu_options = (
         (_OPEN_PANEL, None, state.open_panel),
+        # A-65-6: панель сразу на вкладке «Компоненты системы».
+        (_DIAGNOSTICS, None, state.open_diagnostics),
         # Mapped to the SAME built-in QUIT sentinel action infi.systray's
         # own auto-appended ('Quit', None, SysTrayIcon.QUIT) entry uses
         # (see this module's docstring for why both end up in the menu,
@@ -291,6 +396,13 @@ def main() -> None:
         )
 
     systray.start()
+    # A-65-6: сторож стартует ПОСЛЕ systray.start() — иконка уже в трее,
+    # когда появляется вопрос «Запустить Docker Desktop?». Daemon-поток:
+    # выход из трея не должен ждать ни MessageBox, ни compose up.
+    watchdog_thread = threading.Thread(
+        target=_run_watchdog, args=(state,), name="hranix-shield-watchdog", daemon=True
+    )
+    watchdog_thread.start()
     # SysTrayIcon.start() spawns its own Win32-message-loop thread and
     # returns immediately — this process is kept alive by explicitly
     # waiting on the same "block on an Event a callback sets" idiom

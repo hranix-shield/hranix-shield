@@ -3,6 +3,7 @@ subprocess involved (mirrors tests/unit/test_auth_service.py's
 resolve_jwt_secret tests, same fallback shape, same "AGPL source can't ship
 a working constant" reasoning)."""
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,12 @@ def test_resolve_backup_password_file_is_stable_across_independent_settings_inst
     assert first_password == second_password
 
 
+# A-65-0 (из промпта A-64): проверка POSIX-прав 0600 — ограничение среды, не
+# бага кода: на NTFS chmod эти биты не даёт (см. CONTRIBUTING.md §1).
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="требует POSIX-прав: на NTFS chmod 0600 неприменим (артефакт среды)",
+)
 @pytest.mark.unit
 def test_resolve_backup_password_file_sets_restrictive_permissions(tmp_path: Path):
     secret_file = tmp_path / ".restic_password"

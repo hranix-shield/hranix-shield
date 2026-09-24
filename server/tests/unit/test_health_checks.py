@@ -42,13 +42,53 @@ async def test_check_database_reports_degraded_when_the_engine_cannot_connect(
 
 
 @pytest.mark.unit
-async def test_register_default_checks_wires_database_and_event_bus():
+async def test_register_default_checks_wires_database_event_bus_and_system_stack():
     registry = HealthRegistry()
     bus = EventBus()
 
     register_default_checks(registry, event_bus=bus)
 
-    assert set(registry._checks.keys()) == {"database", "event_bus"}
+    # A-65-2: «честное здоровье» — машина целиком как третий дефолт-чек.
+    assert set(registry._checks.keys()) == {"database", "event_bus", "system_stack"}
+
+
+@pytest.mark.unit
+async def test_system_stack_check_surfaces_matrix_aggregate(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Чек system_stack транслирует агрегат матрицы в Status реестра и несёт
+    список компонентов в details (тот же публичный payload, без секретов)."""
+    import app.services.health.system as health_system_module
+
+    registry = HealthRegistry()
+    register_default_checks(registry, event_bus=EventBus())
+    check = registry._checks["system_stack"]
+
+    # Здоровая фейковая машина (autouse-фикстура conftest) -> OK.
+    healthy = await check()
+    assert healthy.status == Status.OK
+    assert healthy.details["components"][0]["id"] == "server"
+
+    # Матрица отдала down (docker-движок лежит) -> DOWN в реестре.
+    async def fake_collect(*, force: bool = False):
+        return {
+            "aggregate": "down",
+            "components": [
+                {
+                    "id": "docker_engine",
+                    "status": "unreachable",
+                    "detail": "docker_daemon_unreachable",
+                    "action": "start_docker_desktop",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(health_system_module, "collect_system_health", fake_collect)
+
+    result = await check()
+
+    assert result.status is Status.DOWN
+    assert result.details["components"][0]["id"] == "docker_engine"
 
 
 @pytest.mark.unit

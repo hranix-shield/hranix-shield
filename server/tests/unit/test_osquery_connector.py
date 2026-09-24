@@ -13,6 +13,7 @@ bootloader attributes.
 """
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -526,6 +527,16 @@ def test_resolve_osqueryi_packaged_but_vendored_binary_missing_falls_back(
     assert _resolve_osqueryi() == "osqueryi"
 
 
+# A-65-0 (из промпта A-64): оба теста ждут macOS/POSIX-layout vendored-пути
+# (`vendor/osquery/osqueryi` без суффикса); на Windows вендорится
+# `osqueryi.exe` — Windows-раскладка покрыта соседними тестами ниже.
+_WIN32_SKIP = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="требует macOS-layout vendored-путей; на Windows вендорится osqueryi.exe",
+)
+
+
+@_WIN32_SKIP
 @pytest.mark.unit
 def test_resolve_osqueryi_packaged_with_vendored_binary_returns_its_absolute_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -568,6 +579,7 @@ def test_resolve_osqueryi_packaged_windows_looks_for_exe_suffix(
     assert _resolve_osqueryi() == str(exe)
 
 
+@_WIN32_SKIP
 @pytest.mark.unit
 async def test_query_invokes_the_resolved_vendored_binary_not_the_bare_name(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path

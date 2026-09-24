@@ -80,6 +80,25 @@ button{font-family:inherit; cursor:pointer;}
   font-size:12.5px; margin-bottom:14px;
 }
 .login-card .btn-accent{width:100%; padding:10px; font-size:13.5px;}
+/* A-65-5: полоса статуса компонентов ДО входа — «панель открылась, но
+   Docker/стек лежат» видно сразу; статусы цветом, компоненты точками
+   (тултип — лейбл+статус), перечень нездоровых — текстом под агрегатом. */
+.login-health{
+  display:flex; flex-direction:column; gap:7px; margin:0 0 16px;
+  padding:10px 12px; border:1px solid var(--line); border-radius:10px;
+  background:var(--surface);
+}
+.login-health-agg{font-size:12px; font-weight:700;}
+.login-health-agg.ok{color:var(--good);}
+.login-health-agg.degraded{color:var(--warn);}
+.login-health-agg.down{color:var(--crit);}
+.login-health-bad{font-size:11.5px; color:var(--ink2); line-height:1.45;}
+.login-health-dots{display:flex; flex-wrap:wrap; gap:6px;}
+.login-health-dot{width:9px; height:9px; border-radius:50%; flex-shrink:0;}
+.login-health-dot.ok{background:var(--good);}
+.login-health-dot.not_configured{background:var(--muted);}
+.login-health-dot.degraded{background:var(--warn);}
+.login-health-dot.unreachable{background:var(--crit);}
 .lang-tgl,.chip-btn{
   border:1px solid var(--line); background:var(--surface); color:var(--ink2);
   border-radius:8px; padding:6px 11px; font-size:12px; font-weight:700;
@@ -147,6 +166,9 @@ button.sec-card:hover{border-color:var(--accent);}
 .sec-state.ok{background:var(--good-soft); color:var(--good-t);}
 .sec-state.degraded{background:var(--warn-soft); color:var(--warn-t);}
 .sec-state.down{background:var(--crit-soft); color:var(--crit-t);}
+/* A-65-4: «не настроен» — не ошибка и не авария: нейтральный серый, честно
+   отличный от degraded (жёлтого «внимания») в матрице компонентов. */
+.sec-state.not-configured{background:var(--surface3); color:var(--muted);}
 .sec-go{color:var(--muted); font-size:18px; margin-left:2px; flex-shrink:0;}
 
 /* ---------- журнал событий ---------- */

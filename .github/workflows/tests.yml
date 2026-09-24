@@ -15,10 +15,9 @@
 # Docker-компаньонов: обычный прогон полностью офлайн. E2E (Playwright)
 # самопропускается без установленного браузера.
 #
-# windows-latest: сьют написан и прогонялся на macOS; Windows-путь — наименее
-# проверенная платформа (аудит R6). Статус continue-on-error, чтобы желтая
-# галочка была сигналом, а не блокером; перевести в строгий режим после
-# первой ручной Windows-приёмки (задача-потомок аудита §8.3).
+# windows-latest: platform-skips применены (A-65-0, перенос из промпта A-64),
+# полный сьют зелёный на обеих ОС — windows-джоба в СТРОГОМ режиме (без
+# continue-on-error).
 
 name: Tests (pytest)
 
@@ -38,7 +37,6 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     timeout-minutes: 20
     defaults:
       run:

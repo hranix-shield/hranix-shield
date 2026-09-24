@@ -10,6 +10,7 @@ DB-writing functions.
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime
 
 import pytest
@@ -199,6 +200,13 @@ async def test_list_scan_history_respects_the_limit(
 # ---------------------------------------------------------------------------
 
 
+# A-65-0 (из промпта A-64): тест пишет настоящий EICAR-тестфайл, который
+# реальный Windows Defender удаляет до скана — артефакт среды, не кода
+# (см. CONTRIBUTING.md §1). Семантика теста не меняется.
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows Defender перехватывает EICAR-тестфайл до скана (артефакт среды)",
+)
 @pytest.mark.unit
 async def test_full_scan_job_persists_a_scan_history_row_on_completion(
     tmp_path, migrated_session_maker: async_sessionmaker[AsyncSession]

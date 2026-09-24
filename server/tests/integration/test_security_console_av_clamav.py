@@ -27,6 +27,7 @@ osquery's.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -701,6 +702,14 @@ async def test_quarantine_list_real_wiring_reflects_a_real_quarantined_file(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
+# A-65-0 (из промпта A-64): ожидание сверяет POSIX-строку пути; на Windows
+# Path нормализует его в backslashes — ограничение среды, не бага кода
+# (см. CONTRIBUTING.md §1).
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="ожидание — POSIX-строка пути; на Windows Path нормализует backslashes",
+)
 @pytest.mark.integration
 async def test_quarantine_restore_returns_the_restored_path_on_success(
     client: TestClient,

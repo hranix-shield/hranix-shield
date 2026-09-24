@@ -13,6 +13,7 @@ exit-code/marker contract, matching the "implemented from documentation,
 not live-verified" disclosure already in elevated.py's own docstrings.
 """
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -309,6 +310,13 @@ async def test_unsupported_platform_is_reported_as_failed_never_raises(monkeypat
     assert "PlanNine" in result.stderr
 
 
+# A-65-0 (из промпта A-64): единственный тест файла, запускающий реальный
+# процесс — но это unix-бинарь /bin/echo, на Windows его не существует
+# (ограничение среды; Windows-планировка покрыта остальными тестами файла).
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="запускает unix-бинарь /bin/echo (ограничение среды)",
+)
 @pytest.mark.unit
 async def test_default_runner_executes_a_real_local_command():
     """The one test in this file that runs a REAL subprocess — but a

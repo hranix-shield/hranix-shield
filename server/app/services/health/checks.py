@@ -57,7 +57,7 @@ def _make_event_bus_check(event_bus: EventBus) -> HealthCheck:
 
 
 def register_default_checks(registry: HealthRegistry, *, event_bus: EventBus) -> None:
-    """Wires Phase 0's two real subsystems onto `registry`.
+    """Wires Phase 0's real subsystems onto `registry`.
 
     Called once per app instance from `app_factory.create_app()`, mirroring
     `event_bus.register_default_subscribers`. A-11 (CrowdSec/Osquery/Wazuh/
@@ -66,3 +66,15 @@ def register_default_checks(registry: HealthRegistry, *, event_bus: EventBus) ->
     """
     registry.register("database", check_database)
     registry.register("event_bus", _make_event_bus_check(event_bus))
+    # A-65-2 («честное здоровье»): машина целиком — docker-движок, контейнеры
+    # стека, wazuh_api/crowdsec_lapi/clamd, restic/osqueryi, диск — как один
+    # чек. Агрегат /health/detailed (и пилюля) становится худшим ИЗ ВСЕХ
+    # компонентов: инцидент 2026-09-23 («пилюля OK при лежащем Docker-стеке»)
+    # больше невозможен. Опрос — тот же коллектор с кэшем 30с, что у
+    # публичной /health/system, поэтому пилюля-поллинг каждые 20с не
+    # устраивает шторм subprocess-ов. Отложенный импорт: system.py импортирует
+    # check_database отсюда (цикл модулей, безопасный на вызове — к моменту
+    # register_default_checks оба модуля уже загружены).
+    from app.services.health.system import check_system_stack
+
+    registry.register("system_stack", check_system_stack)

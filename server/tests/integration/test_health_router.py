@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import app.services.health.checks as health_checks_module
+import app.services.health.system as health_system_module
 from app.db.models import Event
 from app.services.event_bus import Topic
 
@@ -86,3 +87,41 @@ async def test_health_changed_is_logged_to_events_table_on_transition_and_not_on
     assert events[0].payload["status"] == "degraded"
 
     await broken_engine.dispose()
+
+
+@pytest.mark.integration
+def test_health_detailed_aggregate_is_down_when_docker_stack_is_down(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """A-65-2, суть инцидента 2026-09-23: пилюля/агрегат обязаны упасть в
+    down, когда лежит Docker-стек, даже если внутренние подсистемы процесса
+    (database/event_bus) здоровы."""
+    import urllib.error
+
+    async def engine_down(*args: str, timeout: float = 5.0):
+        if "info" in " ".join(args):
+            return (1, "", "Cannot connect to the Docker daemon")
+        return (0, "", "")
+
+    async def refused(url: str, *, timeout: float = 3.0):
+        raise urllib.error.URLError(ConnectionRefusedError(111))
+
+    async def clamd_down(host: str, port: int):
+        raise RuntimeError("clamd unreachable")
+
+    monkeypatch.setattr(health_system_module, "run_local_command", engine_down)
+    monkeypatch.setattr(health_system_module, "_probe_http", refused)
+    monkeypatch.setattr(health_system_module, "_probe_clamd", clamd_down)
+
+    response = client.get("/health/detailed")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "down"
+    system_stack = body["components"]["system_stack"]
+    assert system_stack["status"] == "down"
+    matrix_ids = [component["id"] for component in system_stack["components"]]
+    assert "docker_engine" in matrix_ids
+    # Внутренние подсистемы по-прежнему честно ok — падает агрегат.
+    assert body["components"]["database"]["status"] == "ok"
+    assert body["components"]["event_bus"]["status"] == "ok"
