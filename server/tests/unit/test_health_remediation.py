@@ -116,6 +116,9 @@ async def test_compose_up_stack_delegates_to_bootstrap_and_invalidates_cache(
 async def test_start_docker_desktop_windows_spawns_installed_exe(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
+    # Пинованая платформа: на ubuntu sys.platform == "linux" и ветка else
+    # вызвала бы `open -a Docker` (macOS-команда). Тест фиксирует win32.
+    monkeypatch.setattr(sys, "platform", "win32")
     exe = tmp_path / "Docker Desktop.exe"
     exe.write_bytes(b"fake-pe")
     spawned: list[Path] = []
@@ -147,6 +150,8 @@ async def test_start_docker_desktop_not_installed_is_honest_error(
 async def test_start_docker_desktop_spawn_failure_is_reported(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
+    monkeypatch.setattr(sys, "platform", "win32")
+
     async def boom(path: Path):
         raise OSError("access denied")
 

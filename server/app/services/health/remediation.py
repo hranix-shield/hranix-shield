@@ -124,14 +124,19 @@ async def compose_up_stack() -> dict[str, Any]:
 
 
 async def start_docker_desktop() -> dict[str, Any]:
+    """Запускает установленный Docker Desktop (Windows/macOS). На Linux
+    Docker Desktop не существует (там Docker Engine — сервис systemd) —
+    возвращает честный `docker_desktop_not_found`."""
     installation = _docker_desktop_installation()
     if installation is None:
         return {"status": "error", "detail": "docker_desktop_not_found"}
     try:
         if sys.platform == "win32":
             await _spawn_detached_windows(installation)
-        else:
+        elif sys.platform == "darwin":
             await run_local_command("open", "-a", "Docker", timeout=_OPEN_TIMEOUT)
+        else:
+            return {"status": "error", "detail": "docker_desktop_not_found"}
     except (OSError, LocalCommandNotFound, LocalCommandTimedOut) as exc:
         logger.info("health: docker desktop spawn failed: %s", exc)
         return {"status": "error", "detail": "spawn_failed"}

@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -230,6 +232,10 @@ async def test_admin_start_docker_desktop_happy_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ):
+    # Пинованая платформа: на ubuntu CI sys.platform == "linux" и ветка
+    # else вызывала бы `open -a Docker` (macOS-команда). Тест фиксирует
+    # win32, чтобы код шёл по _spawn_detached_windows ветке на любой ОС.
+    monkeypatch.setattr(sys, "platform", "win32")
     admin_token = await _token_for(
         client, migrated_session_maker, username="health-admin-dd", role="admin"
     )
@@ -281,7 +287,10 @@ async def test_actions_accept_empty_json_body_without_422(
 ):
     """Живая находка A-65: UI шлёт "{}" телом для не-restart действий —
     обязательное поле name в общей модели тела давало 422 на них всех.
-    Пустой JSON-объект обязаны принимать все четыре действия."""
+    Пустой JSON-объект обязаны принимать все четыре действия.
+    Пинованая платформа win32: на ubuntu sys.platform == "linux" и ветка
+    else у start_docker_desktop вызвала бы `open -a Docker` — не мок."""
+    monkeypatch.setattr(sys, "platform", "win32")
     admin_token = await _token_for(
         client, migrated_session_maker, username="health-admin-empty", role="admin"
     )
