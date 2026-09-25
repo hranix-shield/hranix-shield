@@ -95,7 +95,7 @@ def test_project_lat_lon_matches_the_documented_equirectangular_formula():
     """
     result = subprocess.run(
         ["node", "-e", harness, str(_APP_JS_PATH)],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, encoding="utf-8", errors="replace", timeout=30,
     )
     assert result.returncode == 0, f"node harness failed: {result.stderr}"
     points = json.loads(result.stdout.strip().splitlines()[-1])
@@ -147,7 +147,7 @@ def test_group_connections_by_country_dedupes_and_flags_suspicious_correctly():
     """
     result = subprocess.run(
         ["node", "-e", harness, str(_APP_JS_PATH), json.dumps(connections)],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, encoding="utf-8", errors="replace", timeout=30,
     )
     assert result.returncode == 0, f"node harness failed: {result.stderr}"
     groups = json.loads(result.stdout.strip().splitlines()[-1])

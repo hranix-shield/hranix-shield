@@ -312,10 +312,14 @@ def test_render_console_list_network_branch_produces_a_readable_table():
     result = subprocess.run(
         ["node", "-e", harness, str(_APP_JS_PATH), json.dumps(_FAKE_ENRICHED_CONNECTIONS)],
         capture_output=True,
-        text=True,
+        # node всегда пишет stdout в UTF-8; без явной кодировки Python
+        # декодирует локалью (на CI-раннере cp1252) и русский текст мётся.
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
     )
     assert result.returncode == 0, f"node harness failed: {result.stderr}"
+    assert result.stdout, f"node produced no stdout: rc={result.returncode}, stderr={result.stderr!r}"
     rendered_rows = json.loads(result.stdout.strip().splitlines()[-1])
 
     # Row 0: header row (RU labels by default — currentLang() falls back to

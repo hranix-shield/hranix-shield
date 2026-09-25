@@ -38,6 +38,12 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      # Раннеры по умолчанию в legacy-локали (windows: cp1252): любой
+      # неявный декод в тестах (subprocess/open) мнёт UTF-8 — регрессия
+      # 2026-09-25 (node-харнессы с русскими строками). Явная кодировка
+      # в самих харнессах — основная защита; PYTHONUTF8 закрывает класс.
+      PYTHONUTF8: '1'
     defaults:
       run:
         working-directory: server

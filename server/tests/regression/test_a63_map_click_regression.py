@@ -136,10 +136,14 @@ def _run_harness(js: str) -> dict:
     result = subprocess.run(
         ["node", "-e", _HARNESS + "\n" + js, str(_APP_JS_PATH)],
         capture_output=True,
-        text=True,
+        # node всегда пишет stdout в UTF-8; без явной кодировки Python
+        # декодирует локалью (на CI-раннере cp1252) и русский текст мётся.
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
     )
     assert result.returncode == 0, f"node harness failed: {result.stderr}"
+    assert result.stdout, f"node produced no stdout: rc={result.returncode}, stderr={result.stderr!r}"
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
